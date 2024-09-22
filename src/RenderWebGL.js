@@ -143,7 +143,7 @@ class RenderWebGL extends EventEmitter {
      */
     static _getContext (canvas) {
         const contextAttribs = {
-            alpha: false,
+            alpha: true,
             stencil: true,
             antialias: false,
             powerPreference: RenderWebGL.powerPreference
