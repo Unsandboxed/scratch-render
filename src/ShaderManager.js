@@ -20,6 +20,18 @@ class ShaderManager {
                 this._shaderCache[modeName] = [];
             }
         }
+
+        /* eslint-disable global-require */
+        this.exports = {
+            /**
+             * Sprite shader exports
+             */
+            sprite: {
+                vert: require('raw-loader!./shaders/sprite.vert'),
+                frag: require('raw-loader!./shaders/sprite.frag')
+            },
+        };
+        /* eslint-enable global-require */
     }
 
     /**
@@ -63,10 +75,8 @@ class ShaderManager {
 
         const definesText = `${defines.join('\n')}\n`;
 
-        /* eslint-disable global-require */
-        const vsFullText = definesText + require('raw-loader!./shaders/sprite.vert');
-        const fsFullText = definesText + require('raw-loader!./shaders/sprite.frag');
-        /* eslint-enable global-require */
+        const vsFullText = definesText + this.exports.sprite.vert;
+        const fsFullText = definesText + this.exports.sprite.frag;
 
         return twgl.createProgramInfo(this._gl, [vsFullText, fsFullText]);
     }
