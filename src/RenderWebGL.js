@@ -2245,9 +2245,15 @@ class RenderWebGL extends EventEmitter {
                 currentShader = newShader;
                 gl.useProgram(currentShader.program);
                 twgl.setBuffersAndAttributes(gl, currentShader, this._bufferInfo);
-                Object.assign(uniforms, {
-                    u_projectionMatrix: projection
-                });
+                if (drawable.projection && drawMode !== 'straightAlpha' {
+                    Object.assign(uniforms, {
+                        u_projectionMatrix: drawable.projection
+                    });
+                } else {
+                    Object.assign(uniforms, {
+                        u_projectionMatrix: projection
+                    });
+                }
             }
 
             Object.assign(uniforms,
