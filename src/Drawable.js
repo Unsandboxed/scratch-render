@@ -215,6 +215,11 @@ class Drawable {
                 this._position[0] = Math.round(position[0]);
                 this._position[1] = Math.round(position[1]);
             }
+
+            const cameraState = this._renderer.cameraState;
+            // this._position[0] /= cameraState.zoom;
+            // this._position[1] /= cameraState.zoom;
+
             this._renderer.dirty = true;
             this.setTransformDirty();
         }

@@ -1559,14 +1559,14 @@ class RenderWebGL extends EventEmitter {
 
         this._doExitDrawRegion();
 
-        const nativeCenterX = this._nativeSize[0] * 0.5;
-        const nativeCenterY = this._nativeSize[1] * 0.5;
+        const nativeCenterX = (this._nativeSize[0] / this.cameraState.zoom) * 0.5;
+        const nativeCenterY = (this._nativeSize[1] / this.cameraState.zoom) * 0.5;
 
         const scratchBounds = drawable.getFastBounds();
 
         const canvas = this.canvas;
         // Ratio of the screen-space scale of the stage's canvas to the "native size" of the stage
-        const scaleFactor = canvas.width / this._nativeSize[0];
+        const scaleFactor = (canvas.width / this._nativeSize[0]) * this.cameraState.zoom;
 
         // Bounds of the extracted drawable, in "canvas pixel space"
         // (origin is 0, 0, destination is the canvas width, height).
