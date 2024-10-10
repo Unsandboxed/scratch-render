@@ -259,6 +259,8 @@ class RenderWebGL extends EventEmitter {
 
         this.dirty = true;
 
+        this.snapshotQuality = undefined;
+
         /**
          * Element that contains all overlays.
          * @type {HTMLElement}
@@ -1049,12 +1051,14 @@ class RenderWebGL extends EventEmitter {
             skipPrivateSkins: snapshotRequested
         });
         if (snapshotRequested) {
-            const snapshot = gl.canvas.toDataURL();
+            const quality = this.snapshotQuality;
+            const snapshot = gl.canvas.toDataURL(quality ? "image/jpeg" : "image/png", quality);
             this._snapshotCallbacks.forEach(cb => cb(snapshot));
             this._snapshotCallbacks = [];
             // We need to make sure to always render next frame so that private skins
             // that were skipped this frame will become visible again shortly.
             this.dirty = true;
+            this.snapshotQuality = undefined;
         }
     }
 
