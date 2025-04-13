@@ -217,8 +217,8 @@ class Drawable {
             }
 
             const cameraState = this._renderer.cameraState;
-            // this._position[0] /= cameraState.zoom;
-            // this._position[1] /= cameraState.zoom;
+            this._position[0] /= cameraState.zoom;
+            this._position[1] /= cameraState.zoom;
 
             this._renderer.dirty = true;
             this.setTransformDirty();
