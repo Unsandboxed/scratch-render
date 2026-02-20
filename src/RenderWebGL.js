@@ -1382,11 +1382,15 @@ class RenderWebGL extends EventEmitter {
      * @returns {boolean} True if the Drawable is touching one of candidateIDs.
      */
     isTouchingDrawables (drawableID, candidateIDs = this._drawList) {
+        // if we are invisible we don't touch anything.
+        if (!this._allDrawables[drawableID]._visible) {
+            return false;
+        }
+
         const candidates = this._candidatesTouching(drawableID,
             // even if passed an invisible drawable, we will NEVER touch it!
             candidateIDs.filter(id => this._allDrawables[id]._visible));
-        // if we are invisble we don't touch anything.
-        if (candidates.length === 0 || !this._allDrawables[drawableID]._visible) {
+        if (candidates.length === 0) {
             return false;
         }
 
@@ -1790,20 +1794,6 @@ class RenderWebGL extends EventEmitter {
         return bounds;
     }
 
-    _unsnappedTouchingBounds (drawableID) {
-        // _touchingBounds with the snapToint call removed.
-        const drawable = this._allDrawables[drawableID];
-        if (!drawable.skin || !drawable.skin.getTexture([100, 100])) return null;
-        const bounds = drawable.getFastBounds();
-        if (!this.offscreenTouching) {
-            bounds.clamp(this._xLeft, this._xRight, this._yBottom, this._yTop);
-        }
-        if (bounds.width === 0 || bounds.height === 0) {
-            return null;
-        }
-        return bounds;
-    }
-
     /**
      * Filter a list of candidates for a touching query into only those that
      * could possibly intersect the given bounds.
@@ -2058,15 +2048,22 @@ class RenderWebGL extends EventEmitter {
      * @param {int} stampID - the unique ID of the Drawable to use as the stamp.
      */
     penStamp (penSkinID, stampID) {
-        this.dirty = true;
         const stampDrawable = this._allDrawables[stampID];
-        if (!stampDrawable) {
+        if (
+            !stampDrawable ||
+            !stampDrawable.skin ||
+            !stampDrawable.skin.isMetricsReady()
+        ) {
             return;
         }
 
-        // TW: The bounds will be snapped later
-        const bounds = this._unsnappedTouchingBounds(stampID);
-        if (!bounds) {
+        const bounds = stampDrawable.getFastBounds();
+        // Ideally we wouldn't need to check offscreenTouching at all here, but the camera extensions
+        // do too many crazy things to risk changing this control flow.
+        if (!this.offscreenTouching) {
+            bounds.clamp(this._xLeft, this._xRight, this._yBottom, this._yTop);
+        }
+        if (bounds.width === 0 || bounds.height === 0) {
             return;
         }
 
@@ -2109,6 +2106,7 @@ class RenderWebGL extends EventEmitter {
             framebufferHeight: this._nativeSize[1] * quality
         });
         skin._silhouetteDirty = true;
+        this.dirty = true;
     }
 
     /* ******
@@ -2260,11 +2258,14 @@ class RenderWebGL extends EventEmitter {
                 drawable.scale[1] * opts.framebufferHeight / this._nativeSize[1]
             ] : drawable.scale;
 
-            // If the skin or texture isn't ready yet, skip it.
-            if (!drawable.skin || !drawable.skin.getTexture(drawableScale)) continue;
+            // Skip drawables with no skin.
+            if (!drawable.skin) continue;
 
             // Skip private skins, if requested.
             if (opts.skipPrivateSkins && drawable.skin.private) continue;
+
+            // Skip drawables with a skin that does not have a texture.
+            if (!drawable.skin.getTexture(drawableScale)) continue;
 
             const uniforms = {};
 
