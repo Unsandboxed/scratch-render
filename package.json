@@ -46,9 +46,6 @@
     "webpack-dev-server": "3.11.2",
     "@turbowarp/scratch-storage": "github:Unsandboxed/scratch-storage#develop"
   },
-  "peerDependencies": {
-    "@turbowarp/scratch-storage": "github:Unsandboxed/scratch-storage#develop"
-  },
   "dependencies": {
     "@turbowarp/ancient-hull.js": "^0.2.13",
     "@turbowarp/nanolog": "^0.2.0",
