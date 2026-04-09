@@ -560,6 +560,70 @@ class RenderWebGL extends EventEmitter {
         return [nx, ny];
     }
 
+    /**
+     * Get client-space dimensions consistent with pointer event coordinates.
+     * @returns {Array<number>} [width, height]
+     */
+    _getClientSpaceSize () {
+        const canvas = this._gl.canvas;
+        const rect = canvas.getBoundingClientRect();
+        const width = rect.width || canvas.clientWidth || this._nativeSize[0];
+        const height = rect.height || canvas.clientHeight || this._nativeSize[1];
+        return [width, height];
+    }
+
+    /**
+     * Convert a client-space point to Scratch world-space.
+     * @param {number} x Client-space x coordinate.
+     * @param {number} y Client-space y coordinate.
+     * @returns {Array<number>} Scratch-space [x, y].
+     */
+    clientSpaceToScratchPoint (x, y) {
+        const [clientWidth, clientHeight] = this._getClientSpaceSize();
+
+        // Screen-space coordinates in Scratch units before camera transform.
+        const u = this._xLeft + ((x / clientWidth) * this._nativeSize[0]);
+        const v = this._yTop - ((y / clientHeight) * this._nativeSize[1]);
+
+        // Invert the camera transform exactly:
+        // [u v]^T = A * ([X Y]^T - [camX camY]^T), where A = zoom * R.
+        const c = this.cameraState.cos;
+        const s = this.cameraState.sin;
+        const det = (c * c) + (s * s) || 1;
+
+        const dx = ((c * u) - (s * v)) / det;
+        const dy = ((s * u) + (c * v)) / det;
+
+        return [
+            this.cameraState.x + dx,
+            this.cameraState.y + dy
+        ];
+    }
+
+    /**
+     * Convert a client-space movement delta to world-space movement delta.
+     * @param {number} dx Client-space delta x.
+     * @param {number} dy Client-space delta y.
+     * @returns {Array<number>} World-space delta [dx, dy].
+     */
+    clientDeltaToScratchDelta (dx, dy) {
+        const [clientWidth, clientHeight] = this._getClientSpaceSize();
+
+        // Screen-space delta in Scratch units before camera transform.
+        const u = dx * (this._nativeSize[0] / clientWidth);
+        const v = -dy * (this._nativeSize[1] / clientHeight);
+
+        // Invert linear camera transform A = zoom * R.
+        const c = this.cameraState.cos;
+        const s = this.cameraState.sin;
+        const det = (c * c) + (s * s) || 1;
+
+        return [
+            ((c * u) - (s * v)) / det,
+            ((s * u) + (c * v)) / det
+        ];
+    }
+
     translateX(x, fromTopLeft = false, xMult = 1, doZoom = true, y = 0, yMult = xMult) {
         const cx = this.cameraState.x;
         const cy = this.cameraState.y;
@@ -1424,7 +1488,7 @@ class RenderWebGL extends EventEmitter {
 
     /**
      * Convert a client based x/y position on the canvas to a Scratch 3 world space
-     * Rectangle.  This creates recangles with a radius to cover selecting multiple
+    * Rectangle. This creates rectangles with a radius to cover selecting multiple
      * scratch pixels with touch / small render areas.
      *
      * @param {int} centerX The client x coordinate of the picking location.
@@ -1435,27 +1499,32 @@ class RenderWebGL extends EventEmitter {
      *                      left <= right.
      */
     clientSpaceToScratchBounds (centerX, centerY, width = 1, height = 1) {
-        const gl = this._gl;
+        const [clientWidth, clientHeight] = this._getClientSpaceSize();
+        const [scratchCenterX, scratchCenterY] = this.clientSpaceToScratchPoint(centerX, centerY);
+        const zoom = Math.sqrt((this.cameraState.cos * this.cameraState.cos) + (this.cameraState.sin * this.cameraState.sin)) || 1;
 
-        const clientToScratchX = this._nativeSize[0] / gl.canvas.clientWidth;
-        const clientToScratchY = this._nativeSize[1] / gl.canvas.clientHeight;
+        const clientToScratchX = (this._nativeSize[0] / clientWidth) / zoom;
+        const clientToScratchY = (this._nativeSize[1] / clientHeight) / zoom;
 
         width *= clientToScratchX;
         height *= clientToScratchY;
 
         width = Math.max(1, Math.min(Math.round(width), MAX_TOUCH_SIZE[0]));
         height = Math.max(1, Math.min(Math.round(height), MAX_TOUCH_SIZE[1]));
-        const x = (centerX * clientToScratchX) - ((width - 1) / 2);
-        // + because scratch y is inverted
-        const y = (centerY * clientToScratchY) + ((height - 1) / 2);
+        const x = scratchCenterX - ((width - 1) / 2);
+        const y = scratchCenterY + ((height - 1) / 2);
 
         const xOfs = (width % 2) ? 0 : -0.5;
         // y is offset +0.5
         const yOfs = (height % 2) ? 0 : -0.5;
 
         const bounds = new Rectangle();
-        bounds.initFromBounds(Math.floor(this._xLeft + x + xOfs), Math.floor(this._xLeft + x + xOfs + width - 1),
-            Math.ceil(this._yTop - y + yOfs), Math.ceil(this._yTop - y + yOfs + height - 1));
+        bounds.initFromBounds(
+            Math.floor(x + xOfs),
+            Math.floor(x + xOfs + width - 1),
+            Math.ceil(y - height + 1 + yOfs),
+            Math.ceil(y + yOfs)
+        );
         return bounds;
     }
 
@@ -1511,9 +1580,6 @@ class RenderWebGL extends EventEmitter {
      * RenderConstants.ID_NONE if there is no Drawable at that location.
      */
     pick (centerX, centerY, touchWidth, touchHeight, candidateIDs) {
-        centerX = this.translateX(centerX, true, 1, true, centerY, -1);
-        centerY = this.translateY(centerY, true, -1, true, centerX, 1);
-
         const bounds = this.clientSpaceToScratchBounds(centerX, centerY, touchWidth, touchHeight);
         if (bounds.left === -Infinity || bounds.bottom === -Infinity) {
             return RenderConstants.ID_NONE;
@@ -1673,16 +1739,21 @@ class RenderWebGL extends EventEmitter {
             // the canvas resizing, then it'll differ.
             const ratio = canvas.getBoundingClientRect().width / canvas.width;
 
-            const x = canvasSpaceBounds.left * ratio;
-            const y = canvasSpaceBounds.bottom * ratio;
-            const translatedX = this.translateX(x, false, -1, false, y, 1);
-            const translatedY = this.translateY(y, false, 1, false, x, -1);
             return {
                 imageData,
-                x: translatedX,
-                y: translatedY,
+                // CSS-pixel position of the sprite's bounding box in unrotated screen space.
+                // positionDragCanvas() applies the camera CSS transform on top of this.
+                x: canvasSpaceBounds.left * ratio,
+                y: canvasSpaceBounds.bottom * ratio,
                 width: canvasSpaceBounds.width * ratio,
-                height: canvasSpaceBounds.height * ratio
+                height: canvasSpaceBounds.height * ratio,
+                // Scratch world-space bounds (snapped to canvas pixels) for pick-point math.
+                scratchBounds: {
+                    left: scratchBounds.left,
+                    right: scratchBounds.right,
+                    top: scratchBounds.top,
+                    bottom: scratchBounds.bottom
+                }
             };
         } finally {
             gl.deleteFramebuffer(bufferInfo.framebuffer);
@@ -1707,8 +1778,9 @@ class RenderWebGL extends EventEmitter {
     extractColor (x, y, radius) {
         this._doExitDrawRegion();
 
-        const scratchX = Math.round(this._nativeSize[0] * ((x / this._gl.canvas.clientWidth) - 0.5));
-        const scratchY = Math.round(-this._nativeSize[1] * ((y / this._gl.canvas.clientHeight) - 0.5));
+        const [scratchXFloat, scratchYFloat] = this.clientSpaceToScratchPoint(x, y);
+        const scratchX = Math.round(scratchXFloat);
+        const scratchY = Math.round(scratchYFloat);
 
         const gl = this._gl;
         twgl.bindFramebufferInfo(gl, this._queryBufferInfo);
@@ -1880,6 +1952,25 @@ class RenderWebGL extends EventEmitter {
         // TODO: https://github.com/LLK/scratch-vm/issues/2288
         if (!drawable) return;
         drawable.updatePosition(position);
+    }
+
+    /**
+     * Update a drawable's position with exact floating-point coordinates.
+     * This bypasses Drawable.updatePosition's integer rounding when not in
+     * high-quality mode.
+     * @param {number} drawableID The drawable's id.
+     * @param {Array.<number>} position The new exact position.
+     */
+    updateDrawablePositionExact (drawableID, position) {
+        const drawable = this._allDrawables[drawableID];
+        // TODO: https://github.com/LLK/scratch-vm/issues/2288
+        if (!drawable) return;
+        if (drawable._position[0] !== position[0] || drawable._position[1] !== position[1]) {
+            drawable._position[0] = position[0];
+            drawable._position[1] = position[1];
+            this.dirty = true;
+            drawable.setTransformDirty();
+        }
     }
 
     /**
