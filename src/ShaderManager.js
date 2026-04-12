@@ -336,9 +336,7 @@ class ShaderManager {
  * Mapping of each effect name to info about that effect.
  * @enum {ShaderManager.Effect}
  */
-ShaderManager.EFFECT_INFO = {
-    ...DEFAULT_EFFECT_INFO
-};
+ShaderManager.EFFECT_INFO = Object.assign({}, DEFAULT_EFFECT_INFO);
 
 /**
  * The name of each supported effect.
