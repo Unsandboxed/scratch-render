@@ -2012,6 +2012,34 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Update a drawable's skew.
+     * @param {number} drawableID The drawable's id.
+     * @param {Array.<number>} skew New skew angles in degrees [skewX, skewY].
+     */
+    updateDrawableSkew (drawableID, skew) {
+        const drawable = this._allDrawables[drawableID];
+        // TODO: https://github.com/LLK/scratch-vm/issues/2288
+        if (!drawable) return;
+        drawable.updateSkew(skew);
+    }
+
+    /**
+     * Update a drawable's direction, scale, and skew together.
+     * @param {number} drawableID The drawable's id.
+     * @param {number} direction A new direction.
+     * @param {Array.<number>} scale A new scale.
+     * @param {Array.<number>} skew New skew angles in degrees [skewX, skewY].
+     */
+    updateDrawableDirectionScaleSkew (drawableID, direction, scale, skew) {
+        const drawable = this._allDrawables[drawableID];
+        // TODO: https://github.com/LLK/scratch-vm/issues/2288
+        if (!drawable) return;
+        drawable.updateDirection(direction);
+        drawable.updateScale(scale);
+        drawable.updateSkew(skew);
+    }
+
+    /**
      * Update a drawable's visibility.
      * @param {number} drawableID The drawable's id.
      * @param {boolean} visible Will the drawable be visible?

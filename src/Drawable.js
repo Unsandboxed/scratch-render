@@ -97,6 +97,7 @@ class Drawable {
 
         this._position = twgl.v3.create(0, 0);
         this._scale = twgl.v3.create(100, 100);
+        this._skew = twgl.v3.create(0, 0);
         this._direction = 90;
         this._transformDirty = true;
         this._rotationMatrix = twgl.m4.identity();
@@ -191,6 +192,13 @@ class Drawable {
     }
 
     /**
+     * @returns {Array<number>} the current skew angles in degrees [skewX, skewY].
+     */
+    get skew () {
+        return [this._skew[0], this._skew[1]];
+    }
+
+    /**
      * @returns {object.<string, *>} the shader uniforms to be used when rendering this Drawable.
      */
     getUniforms () {
@@ -256,6 +264,20 @@ class Drawable {
     }
 
     /**
+     * Update the skew if it is different. Marks the transform as dirty.
+     * @param {Array.<number>} skew New skew angles in degrees [skewX, skewY].
+     */
+    updateSkew (skew) {
+        if (this._skew[0] !== skew[0] ||
+            this._skew[1] !== skew[1]) {
+            this._skew[0] = skew[0];
+            this._skew[1] = skew[1];
+            this._renderer.dirty = true;
+            this.setTransformDirty();
+        }
+    }
+
+    /**
      * Update visibility if it is different. Marks the convex hull as dirty.
      * @param {boolean} visible A new visibility state.
      */
@@ -305,6 +327,14 @@ class Drawable {
         }
         if ('scale' in properties) {
             this.updateScale(properties.scale);
+        }
+        if ('skew' in properties) {
+            this.updateSkew(properties.skew);
+        } else if ('skewX' in properties || 'skewY' in properties) {
+            this.updateSkew([
+                'skewX' in properties ? properties.skewX : this._skew[0],
+                'skewY' in properties ? properties.skewY : this._skew[1]
+            ]);
         }
         if ('visible' in properties) {
             this.updateVisible(properties.visible);
@@ -430,6 +460,12 @@ class Drawable {
 
         const scale0 = this._skinScale[0];
         const scale1 = this._skinScale[1];
+        const skewRadians0 = this._skew[0] * Math.PI / 180;
+        const skewRadians1 = this._skew[1] * Math.PI / 180;
+        const skewFactor0 = Math.tan(skewRadians0);
+        const skewFactor1 = Math.tan(skewRadians1);
+        const scaledSkew0 = scale0 * skewFactor0;
+        const scaledSkew1 = scale1 * skewFactor1;
         const rotation00 = this._rotationMatrix[0];
         const rotation01 = this._rotationMatrix[1];
         const rotation10 = this._rotationMatrix[4];
@@ -442,12 +478,12 @@ class Drawable {
         // Commented assignments show what the values are when the matrix was
         // instantiated. Those values will never change so they do not need to
         // be reassigned.
-        modelMatrix[0] = scale0 * rotation00;
-        modelMatrix[1] = scale0 * rotation01;
+        modelMatrix[0] = (scale0 * rotation00) + (scaledSkew1 * rotation10);
+        modelMatrix[1] = (scale0 * rotation01) + (scaledSkew1 * rotation11);
         // modelMatrix[2] = 0;
         // modelMatrix[3] = 0;
-        modelMatrix[4] = scale1 * rotation10;
-        modelMatrix[5] = scale1 * rotation11;
+        modelMatrix[4] = (scaledSkew0 * rotation00) + (scale1 * rotation10);
+        modelMatrix[5] = (scaledSkew0 * rotation01) + (scale1 * rotation11);
         // modelMatrix[6] = 0;
         // modelMatrix[7] = 0;
         // modelMatrix[8] = 0;
