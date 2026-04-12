@@ -99,6 +99,8 @@ class ShaderManager {
      * @param {number} [effectInfo.mask] Explicit bitmask. If omitted, first free mask is used.
      * @param {function} [effectInfo.converter] Conversion from Scratch value to shader uniform value.
      * @param {boolean} [effectInfo.shapeChanges] Whether this effect can change rendered shape.
+     * @param {function|number|Array|object} [effectInfo.boundsPadding] Extra normalized padding to allocate
+     * around the drawable for this effect. A function receives the raw Scratch effect value and returns padding.
      * @param {string} [effectInfo.fragmentUniforms] GLSL uniform declarations for the fragment shader.
      * @param {string} [effectInfo.fragmentTexcoord] GLSL code that mutates texcoord0 before sampling u_skin.
      * @param {string} [effectInfo.fragmentColor] GLSL code that mutates gl_FragColor after color/brightness.
@@ -275,7 +277,8 @@ class ShaderManager {
             uniformName,
             mask,
             converter,
-            shapeChanges: !!effectInfo.shapeChanges
+            shapeChanges: !!effectInfo.shapeChanges,
+            boundsPadding: effectInfo.boundsPadding || null
         };
         ShaderManager.EFFECTS = Object.keys(ShaderManager.EFFECT_INFO);
 
@@ -330,6 +333,7 @@ class ShaderManager {
  *   0..100 or -100..100) and maps it to a value useful to the shader. This
  *   mapping may not be reversible.
  * @prop {boolean} shapeChanges - Whether the effect could change the drawn shape.
+ * @prop {function|number|Array|object|null} boundsPadding - Extra normalized padding allocated around the drawable.
  */
 
 /**

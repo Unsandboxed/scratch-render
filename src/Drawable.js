@@ -13,6 +13,7 @@ const log = require('./util/log');
  */
 const __isTouchingPosition = twgl.v3.create();
 const FLOATING_POINT_ERROR_ALLOWANCE = 1e-6;
+const __effectBoundsMatrix = twgl.m4.identity();
 
 /**
  * Convert a scratch space location into a texture space float.  Uses the
@@ -42,6 +43,7 @@ const getLocalPosition = (drawable, vec) => {
     // TODO: Check if this can be removed after render pull 479 is merged
     if (Math.abs(localPosition[0]) < FLOATING_POINT_ERROR_ALLOWANCE) localPosition[0] = 0;
     if (Math.abs(localPosition[1]) < FLOATING_POINT_ERROR_ALLOWANCE) localPosition[1] = 0;
+
     // Apply texture effect transform if the localPosition is within the drawable's space,
     // and any effects are currently active.
     if (drawable.enabledEffects !== 0 &&
@@ -80,6 +82,12 @@ class Drawable {
             u_modelMatrix: twgl.m4.identity(),
 
             /**
+             * Extra normalized padding around the sprite quad for effects which render outside the base bounds.
+             * @type {Array<number>}
+             */
+            u_effectPadding: [0, 0],
+
+            /**
              * The color to use in the silhouette draw mode.
              * @type {Array<number>}
              */
@@ -98,6 +106,7 @@ class Drawable {
         this._position = twgl.v3.create(0, 0);
         this._scale = twgl.v3.create(100, 100);
         this._skew = twgl.v3.create(0, 0);
+        this._effectPadding = twgl.v3.create(0, 0);
         this._direction = 90;
         this._transformDirty = true;
         this._rotationMatrix = twgl.m4.identity();
@@ -114,6 +123,7 @@ class Drawable {
          * @readonly
          * @type {int} */
         this.enabledEffects = 0;
+        this._effectRawValues = Object.create(null);
 
         /** @todo move convex hull functionality, maybe bounds functionality overall, to Skin classes */
         this._convexHullPoints = null;
@@ -307,10 +317,52 @@ class Drawable {
             this.enabledEffects &= ~effectInfo.mask;
         }
         const converter = effectInfo.converter;
+        this._effectRawValues[effectName] = rawValue;
         this._uniforms[effectInfo.uniformName] = converter(rawValue);
+        if (this._recalculateEffectPadding()) {
+            this.setTransformDirty();
+            this.setConvexHullDirty();
+        }
         if (effectInfo.shapeChanges) {
             this.setConvexHullDirty();
         }
+    }
+
+    /**
+     * Recalculate aggregate padding needed for active effects.
+     * @returns {boolean} True if the padding changed.
+     * @private
+     */
+    _recalculateEffectPadding () {
+        let paddingX = 0;
+        let paddingY = 0;
+
+        const numEffects = ShaderManager.EFFECTS.length;
+        for (let index = 0; index < numEffects; ++index) {
+            const effectName = ShaderManager.EFFECTS[index];
+            const effectInfo = ShaderManager.EFFECT_INFO[effectName];
+            if (!effectInfo || !effectInfo.boundsPadding) continue;
+
+            const rawValue = this._effectRawValues[effectName] || 0;
+            if (!rawValue) continue;
+
+            const paddingValue = typeof effectInfo.boundsPadding === 'function' ?
+                effectInfo.boundsPadding(rawValue) : effectInfo.boundsPadding;
+            const normalizedPadding = Drawable._normalizeEffectPadding(paddingValue, this.skin);
+            paddingX = Math.max(paddingX, normalizedPadding[0]);
+            paddingY = Math.max(paddingY, normalizedPadding[1]);
+        }
+
+        const currentPadding = this._effectPadding;
+        if (currentPadding[0] === paddingX && currentPadding[1] === paddingY) {
+            return false;
+        }
+
+        currentPadding[0] = paddingX;
+        currentPadding[1] = paddingY;
+        this._uniforms.u_effectPadding[0] = paddingX;
+        this._uniforms.u_effectPadding[1] = paddingY;
+        return true;
     }
 
     /**
@@ -570,6 +622,9 @@ class Drawable {
      * @return {!Rectangle} Bounds for a tight box around the Drawable.
      */
     getBounds (result) {
+        if (this._effectPadding[0] !== 0 || this._effectPadding[1] !== 0) {
+            return this.getAABB(result);
+        }
         if (this.needsConvexHullPoints()) {
             throw new Error('Needs updated convex hull points before bounds calculation.');
         }
@@ -591,6 +646,9 @@ class Drawable {
      * @return {!Rectangle} Bounds for a tight box around a slice of the Drawable.
      */
     getBoundsForBubble (result) {
+        if (this._effectPadding[0] !== 0 || this._effectPadding[1] !== 0) {
+            return this.getAABB(result);
+        }
         if (this.needsConvexHullPoints()) {
             throw new Error('Needs updated convex hull points before bubble bounds calculation.');
         }
@@ -621,7 +679,7 @@ class Drawable {
         if (this._transformDirty) {
             this._calculateTransform();
         }
-        const tm = this._uniforms.u_modelMatrix;
+        const tm = this._getBoundsModelMatrix();
         result = result || new Rectangle();
         result.initFromModelMatrix(tm);
         return result;
@@ -691,6 +749,29 @@ class Drawable {
             twgl.m4.inverse(inverse, inverse);
             this._inverseTransformDirty = false;
         }
+    }
+
+    /**
+     * Get the model matrix used for bounds calculations, including any extra effect padding.
+     * @returns {module:twgl/m4.Mat4} Model matrix for bounds.
+     * @private
+     */
+    _getBoundsModelMatrix () {
+        const paddingX = this._effectPadding[0];
+        const paddingY = this._effectPadding[1];
+        const tm = this._uniforms.u_modelMatrix;
+        if (paddingX === 0 && paddingY === 0) {
+            return tm;
+        }
+
+        const scaleX = 1 + (paddingX * 2);
+        const scaleY = 1 + (paddingY * 2);
+        twgl.m4.copy(tm, __effectBoundsMatrix);
+        __effectBoundsMatrix[0] *= scaleX;
+        __effectBoundsMatrix[1] *= scaleX;
+        __effectBoundsMatrix[4] *= scaleY;
+        __effectBoundsMatrix[5] *= scaleY;
+        return __effectBoundsMatrix;
     }
 
     /**
@@ -785,6 +866,58 @@ class Drawable {
 
         if (drawable.enabledEffects === 0) return textColor;
         return EffectTransform.transformColor(drawable, textColor, effectMask);
+    }
+
+    /**
+     * Normalize effect padding metadata into [x, y] normalized expansion amounts.
+     * @param {number|Array|object} paddingValue Raw padding metadata.
+     * @param {?Skin} skin Skin used to convert texel padding into normalized padding.
+     * @returns {Array<number>} Padding on X and Y axes.
+     * @private
+     */
+    static _normalizeEffectPadding (paddingValue, skin) {
+        const normalizeTexels = (texelsX, texelsY) => {
+            const skinSize = skin ? skin.size : [0, 0];
+            const width = Math.max(1, Number(skinSize[0]) || 1);
+            const height = Math.max(1, Number(skinSize[1]) || 1);
+            return [
+                Math.max(0, texelsX) / width,
+                Math.max(0, texelsY) / height
+            ];
+        };
+
+        if (typeof paddingValue === 'number') {
+            const padding = Math.max(0, paddingValue);
+            return [padding, padding];
+        }
+
+        if (Array.isArray(paddingValue)) {
+            return [
+                Math.max(0, Number(paddingValue[0]) || 0),
+                Math.max(0, Number(paddingValue[1]) || 0)
+            ];
+        }
+
+        if (paddingValue && typeof paddingValue === 'object') {
+            if ('texels' in paddingValue) {
+                const texels = Math.max(0, Number(paddingValue.texels) || 0);
+                return normalizeTexels(texels, texels);
+            }
+
+            if ('texelsX' in paddingValue || 'texelsY' in paddingValue) {
+                return normalizeTexels(
+                    Number(paddingValue.texelsX) || 0,
+                    Number(paddingValue.texelsY) || 0
+                );
+            }
+
+            return [
+                Math.max(0, Number(paddingValue.x) || 0),
+                Math.max(0, Number(paddingValue.y) || 0)
+            ];
+        }
+
+        return [0, 0];
     }
 }
 

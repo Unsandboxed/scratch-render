@@ -55,6 +55,14 @@ varying vec2 v_texCoord;
 // Smaller values can cause problems on some mobile devices.
 const float epsilon = 1e-3;
 
+vec4 sampleSpriteTexel(vec2 uv)
+{
+	if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+		return vec4(0.0);
+	}
+	return texture2D(u_skin, uv);
+}
+
 #if !defined(DRAW_MODE_silhouette) && (defined(ENABLE_color))
 // Branchless color conversions based on code from:
 // http://www.chilliant.com/rgb2hsv.html by Ian Taylor
@@ -163,7 +171,7 @@ void main()
 
 	/* __CUSTOM_EFFECT_TEXCOORD__ */
 
-	gl_FragColor = texture2D(u_skin, texcoord0);
+	gl_FragColor = sampleSpriteTexel(texcoord0);
 
 	/* __CUSTOM_EFFECT_COLOR__ */
 

@@ -19,6 +19,7 @@ const float epsilon = 1e-3;
 #if !(defined(DRAW_MODE_line) || defined(DRAW_MODE_background))
 uniform mat4 u_projectionMatrix;
 uniform mat4 u_modelMatrix;
+uniform vec2 u_effectPadding;
 attribute vec2 a_texCoord;
 #endif
 
@@ -76,7 +77,8 @@ void main() {
 	#elif defined(DRAW_MODE_background)
 	gl_Position = vec4(a_position * 2.0, 0, 1);
 	#else
-	gl_Position = u_projectionMatrix * u_modelMatrix * vec4(a_position, 0, 1);
-	v_texCoord = a_texCoord;
+	vec2 position = a_position * (vec2(1.0) + (u_effectPadding * 2.0));
+	gl_Position = u_projectionMatrix * u_modelMatrix * vec4(position, 0, 1);
+	v_texCoord = (a_texCoord * (vec2(1.0) + (u_effectPadding * 2.0))) - u_effectPadding;
 	#endif
 }
