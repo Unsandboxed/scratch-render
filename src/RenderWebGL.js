@@ -2037,6 +2037,25 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Register a custom sprite shader effect.
+     * @param {string} effectName The effect's unique name.
+     * @param {object} effectInfo Metadata and shader code snippets used by ShaderManager.
+     * @returns {string} The normalized effect name.
+     */
+    registerSpriteShaderEffect (effectName, effectInfo = {}) {
+        const normalizedEffectName = this._shaderManager.registerEffect(effectName, effectInfo);
+
+        // Initialize default uniform values on existing drawables.
+        for (const drawable of this._allDrawables) {
+            if (!drawable) continue;
+            drawable.updateEffect(normalizedEffectName, 0);
+        }
+
+        this.dirty = true;
+        return normalizedEffectName;
+    }
+
+    /**
      * Update the position, direction, scale, or effect properties of this Drawable.
      * @deprecated Use specific updateDrawable* methods instead.
      * @param {int} drawableID The ID of the Drawable to update.

@@ -33,6 +33,8 @@ uniform float u_mosaic;
 uniform float u_ghost;
 #endif // ENABLE_ghost
 
+/* __CUSTOM_EFFECT_UNIFORMS__ */
+
 #ifdef DRAW_MODE_line
 varying vec4 v_lineColor;
 varying float v_lineThickness;
@@ -159,7 +161,11 @@ void main()
 	}
 	#endif // ENABLE_fisheye
 
+	/* __CUSTOM_EFFECT_TEXCOORD__ */
+
 	gl_FragColor = texture2D(u_skin, texcoord0);
+
+	/* __CUSTOM_EFFECT_COLOR__ */
 
 	#if defined(ENABLE_color) || defined(ENABLE_brightness)
 	// Divide premultiplied alpha values for proper color processing

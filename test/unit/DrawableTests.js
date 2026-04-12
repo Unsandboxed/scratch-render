@@ -146,3 +146,12 @@ test('rotate and scale', t => {
 
     t.end();
 });
+
+test('unknown effect updates are ignored', t => {
+    const drawable = new Drawable(null, {dirty: false});
+    t.doesNotThrow(() => {
+        drawable.updateEffect('definitely_not_real', 50);
+    });
+    t.equal(drawable.enabledEffects, 0);
+    t.end();
+});

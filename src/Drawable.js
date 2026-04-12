@@ -275,6 +275,10 @@ class Drawable {
     updateEffect (effectName, rawValue) {
         this._renderer.dirty = true;
         const effectInfo = ShaderManager.EFFECT_INFO[effectName];
+        if (!effectInfo) {
+            log.warn(`Could not update unknown effect: ${effectName}`);
+            return;
+        }
         if (rawValue) {
             this.enabledEffects |= effectInfo.mask;
         } else {
