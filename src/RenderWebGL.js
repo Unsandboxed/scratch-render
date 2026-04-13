@@ -2091,7 +2091,7 @@ class RenderWebGL extends EventEmitter {
     /**
      * Update a drawable's skew.
      * @param {number} drawableID The drawable's id.
-     * @param {Array.<number>} skew New skew angles in degrees [skewX, skewY].
+      * @param {Array.<number>} skew New skew offsets in stage pixels [skewX, skewY].
      */
     updateDrawableSkew (drawableID, skew) {
         const drawable = this._allDrawables[drawableID];
@@ -2105,7 +2105,7 @@ class RenderWebGL extends EventEmitter {
      * @param {number} drawableID The drawable's id.
      * @param {number} direction A new direction.
      * @param {Array.<number>} scale A new scale.
-     * @param {Array.<number>} skew New skew angles in degrees [skewX, skewY].
+     * @param {Array.<number>} skew New skew offsets in stage pixels [skewX, skewY].
      */
     updateDrawableDirectionScaleSkew (drawableID, direction, scale, skew) {
         const drawable = this._allDrawables[drawableID];

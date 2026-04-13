@@ -279,7 +279,7 @@ class Drawable {
     }
 
     /**
-     * @returns {Array<number>} the current skew angles in degrees [skewX, skewY].
+     * @returns {Array<number>} the current skew offsets in stage pixels [skewX, skewY].
      */
     get skew () {
         return [this._skew[0], this._skew[1]];
@@ -374,7 +374,7 @@ class Drawable {
 
     /**
      * Update the skew if it is different. Marks the transform as dirty.
-     * @param {Array.<number>} skew New skew angles in degrees [skewX, skewY].
+     * @param {Array.<number>} skew New skew offsets in stage pixels [skewX, skewY].
      */
     updateSkew (skew) {
         if (this._skew[0] !== skew[0] ||
@@ -717,12 +717,10 @@ class Drawable {
 
         const scale0 = this._skinScale[0];
         const scale1 = this._skinScale[1];
-        const skewRadians0 = this._skew[0] * Math.PI / 180;
-        const skewRadians1 = this._skew[1] * Math.PI / 180;
-        const skewFactor0 = Math.tan(skewRadians0);
-        const skewFactor1 = Math.tan(skewRadians1);
-        const scaledSkew0 = scale0 * skewFactor0;
-        const scaledSkew1 = scale1 * skewFactor1;
+        // Skew values are linear pixel offsets, not angles. This keeps repeated
+        // "change skew by" operations visually consistent.
+        const scaledSkew0 = this._skew[0];
+        const scaledSkew1 = this._skew[1];
         const rotation00 = this._rotationMatrix[0];
         const rotation01 = this._rotationMatrix[1];
         const rotation10 = this._rotationMatrix[4];
