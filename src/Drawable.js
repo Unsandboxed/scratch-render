@@ -184,6 +184,9 @@ class Drawable {
         this._inverseMatrix = twgl.m4.identity();
         this._inverseTransformDirty = true;
         this._visible = true;
+        this._blendMode = 'default';
+        this._blendAmount = 100;
+        this._blendTargetConfigs = [];
 
         /** A bitmask identifying which effects are currently in use.
          * @readonly
@@ -283,6 +286,27 @@ class Drawable {
     }
 
     /**
+     * @returns {string} the drawable blend mode.
+     */
+    get blendMode () {
+        return this._blendMode;
+    }
+
+    /**
+     * @returns {number} the drawable blend amount percentage.
+     */
+    get blendAmount () {
+        return this._blendAmount;
+    }
+
+    /**
+     * @returns {Array<object>} per-target blend configs ({drawableID, mode}), or [] for none.
+     */
+    get blendTargetConfigs () {
+        return this._blendTargetConfigs;
+    }
+
+    /**
      * @returns {object.<string, *>} the shader uniforms to be used when rendering this Drawable.
      */
     getUniforms () {
@@ -359,6 +383,47 @@ class Drawable {
             this._skew[1] = skew[1];
             this._renderer.dirty = true;
             this.setTransformDirty();
+        }
+    }
+
+    /**
+     * Update blend mode if it is different.
+     * @param {string} mode New blend mode.
+     */
+    updateBlendMode (mode) {
+        if (this._blendMode !== mode) {
+            this._blendMode = mode;
+            this._renderer.dirty = true;
+        }
+    }
+
+    /**
+     * Update blend amount if it is different.
+     * @param {number} amount New blend amount percentage.
+     */
+    updateBlendAmount (amount) {
+        if (this._blendAmount !== amount) {
+            this._blendAmount = amount;
+            this._renderer.dirty = true;
+        }
+    }
+
+    /**
+     * Update blend target configs if they are different.
+     * @param {Array<object>} targetConfigs New target configs ({drawableID, mode}), or [] for none.
+     */
+    updateBlendTargetConfigs (targetConfigs) {
+        const normalized = Array.isArray(targetConfigs) ? targetConfigs.map(cfg => ({
+            drawableID: cfg.drawableID,
+            mode: cfg.mode
+        })) : [];
+        const changed = this._blendTargetConfigs.length !== normalized.length ||
+            this._blendTargetConfigs.some((cfg, i) => (
+                cfg.drawableID !== normalized[i].drawableID || cfg.mode !== normalized[i].mode
+            ));
+        if (changed) {
+            this._blendTargetConfigs = normalized;
+            this._renderer.dirty = true;
         }
     }
 
@@ -507,6 +572,26 @@ class Drawable {
         }
         if ('visible' in properties) {
             this.updateVisible(properties.visible);
+        }
+        if ('blendMode' in properties) {
+            this.updateBlendMode(properties.blendMode);
+        }
+        if ('blendAmount' in properties) {
+            this.updateBlendAmount(properties.blendAmount);
+        }
+        if ('blendTargetConfigs' in properties) {
+            this.updateBlendTargetConfigs(properties.blendTargetConfigs);
+        } else if ('blendTargetDrawableIDs' in properties) {
+            const targetConfigs = (properties.blendTargetDrawableIDs || []).map(drawableID => ({
+                drawableID,
+                mode: this._blendMode
+            }));
+            this.updateBlendTargetConfigs(targetConfigs);
+        } else if ('blendTargetDrawableID' in properties) {
+            this.updateBlendTargetConfigs(Number.isInteger(properties.blendTargetDrawableID) ? [{
+                drawableID: properties.blendTargetDrawableID,
+                mode: this._blendMode
+            }] : []);
         }
         if ('clipMaskSkin' in properties) {
             this.updateClipMaskSkin(properties.clipMaskSkin);

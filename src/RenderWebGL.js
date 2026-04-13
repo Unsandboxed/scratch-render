@@ -1976,6 +1976,50 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Update a drawable's blend mode.
+     * @param {number} drawableID The drawable's id.
+     * @param {string} mode The blend mode.
+     */
+    updateDrawableBlendMode (drawableID, mode) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateBlendMode(mode);
+    }
+
+    /**
+     * Update a drawable's blend amount.
+     * @param {number} drawableID The drawable's id.
+     * @param {number} amount The blend amount percentage.
+     */
+    updateDrawableBlendAmount (drawableID, amount) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateBlendAmount(amount);
+    }
+
+    /**
+     * Update a drawable's blend target drawable ID.
+     * @param {number} drawableID The drawable's id.
+     * @param {?number} targetDrawableID The target drawable ID, or null for screen.
+     */
+    updateDrawableBlendTarget (drawableID, targetDrawableID) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateBlendTargetDrawableIDs(Number.isInteger(targetDrawableID) ? [targetDrawableID] : []);
+    }
+
+    /**
+     * Update a drawable's blend target drawable IDs.
+     * @param {number} drawableID The drawable's id.
+     * @param {Array<object>} targetConfigs The target configs ({drawableID, mode}), or [] for none.
+     */
+    updateDrawableBlendTargets (drawableID, targetConfigs) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateBlendTargetConfigs(targetConfigs);
+    }
+
+    /**
      * Update a drawable's position.
      * @param {number} drawableID The drawable's id.
      * @param {Array.<number>} position The new position.
@@ -2404,6 +2448,58 @@ class RenderWebGL extends EventEmitter {
 
         const gl = this._gl;
         let currentShader = null;
+        let currentBlendMode = 'default';
+        let currentBlendAmount = 100;
+        const skipTargetBlend = !!opts._skipTargetBlend;
+
+        const applyBlendState = (mode, blendAmount) => {
+            const normalizedAmount = Math.max(0, Math.min(1, blendAmount / 100));
+
+            switch (mode) {
+            case 'add':
+                gl.blendEquation(gl.FUNC_ADD);
+                gl.blendColor(0, 0, 0, normalizedAmount);
+                gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE);
+                break;
+            case 'multiply':
+                gl.blendEquation(gl.FUNC_ADD);
+                gl.blendColor(0, 0, 0, 1);
+                gl.blendFunc(gl.DST_COLOR, gl.ONE_MINUS_SRC_ALPHA);
+                break;
+            case 'screen':
+                gl.blendEquation(gl.FUNC_ADD);
+                gl.blendColor(0, 0, 0, normalizedAmount);
+                gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE_MINUS_SRC_COLOR);
+                break;
+            case 'overlay':
+                // Single-pass approximation; exact overlay needs framebuffer/shader composition.
+                gl.blendEquation(gl.FUNC_ADD);
+                gl.blendColor(0, 0, 0, normalizedAmount);
+                gl.blendFunc(gl.DST_COLOR, gl.ONE_MINUS_SRC_COLOR);
+                break;
+            case 'subtract':
+                gl.blendEquation(gl.FUNC_REVERSE_SUBTRACT);
+                gl.blendColor(0, 0, 0, normalizedAmount);
+                gl.blendFunc(gl.CONSTANT_ALPHA, gl.ONE);
+                break;
+            case 'invert':
+                // Approximation in single-pass blending; true invert needs a framebuffer composition pass.
+                gl.blendEquation(gl.FUNC_ADD);
+                gl.blendColor(0, 0, 0, 1);
+                gl.blendFunc(gl.ONE_MINUS_DST_COLOR, gl.ONE_MINUS_SRC_COLOR);
+                break;
+            default:
+                gl.blendEquation(gl.FUNC_ADD);
+                gl.blendColor(0, 0, 0, 1);
+                gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+                break;
+            }
+        };
+
+        // Start each draw batch from normal alpha compositing.
+        gl.blendEquation(gl.FUNC_ADD);
+        gl.blendColor(0, 0, 0, 1);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
 
         const framebufferSpaceScaleDiffers = (
             'framebufferWidth' in opts && 'framebufferHeight' in opts &&
@@ -2413,12 +2509,55 @@ class RenderWebGL extends EventEmitter {
         const numDrawables = drawables.length;
         for (let drawableIndex = 0; drawableIndex < numDrawables; ++drawableIndex) {
             const drawableID = drawables[drawableIndex];
+            let drawableBlendMode = 'default';
+            let drawableBlendAmount = 100;
+            let targetBlendConfigs = [];
 
             // If we have a filter, check whether the ID fails
             if (opts.filter && !opts.filter(drawableID)) continue;
 
             const drawable = this._allDrawables[drawableID];
             /** @todo check if drawable is inside the viewport before anything else */
+
+            if (drawMode === ShaderManager.DRAW_MODE.default) {
+                const requestedMode = typeof opts._forceBlendMode === 'string' ? opts._forceBlendMode : (drawable.blendMode || 'default');
+                const requestedAmount = Number.isFinite(opts._forceBlendAmount) ?
+                    opts._forceBlendAmount :
+                    (Number.isFinite(drawable.blendAmount) ? drawable.blendAmount : 100);
+                const blendAmount = Math.max(0, Math.min(200, requestedAmount));
+                const rawTargetConfigs = Array.isArray(drawable.blendTargetConfigs) ? drawable.blendTargetConfigs : [];
+                const supportedMode = (
+                    requestedMode === 'add' ||
+                    requestedMode === 'multiply' ||
+                    requestedMode === 'screen' ||
+                    requestedMode === 'overlay' ||
+                    requestedMode === 'subtract' ||
+                    requestedMode === 'invert'
+                ) ? requestedMode : 'default';
+
+                drawableBlendMode = supportedMode;
+                drawableBlendAmount = blendAmount;
+                targetBlendConfigs = rawTargetConfigs
+                    .map(config => ({
+                        drawableID: config.drawableID,
+                        mode: (
+                            config.mode === 'add' ||
+                            config.mode === 'multiply' ||
+                            config.mode === 'screen' ||
+                            config.mode === 'overlay' ||
+                            config.mode === 'subtract' ||
+                            config.mode === 'invert'
+                        ) ? config.mode : supportedMode
+                    }))
+                    .filter(config => Number.isInteger(config.drawableID) && config.drawableID !== drawableID && !!this._allDrawables[config.drawableID]);
+
+                if (supportedMode !== currentBlendMode || blendAmount !== currentBlendAmount) {
+                    applyBlendState(supportedMode, blendAmount);
+
+                    currentBlendMode = supportedMode;
+                    currentBlendAmount = blendAmount;
+                }
+            }
 
             // Hidden drawables (e.g., by a "hide" block) are not drawn unless
             // the ignoreVisibility flag is used (e.g. for stamping or touchingColor).
@@ -2440,6 +2579,66 @@ class RenderWebGL extends EventEmitter {
 
             // Skip drawables with a skin that does not have a texture.
             if (!drawable.skin.getTexture(drawableScale)) continue;
+
+            if (drawMode === ShaderManager.DRAW_MODE.default && !skipTargetBlend && targetBlendConfigs.length > 0) {
+                const recursiveOptsBase = Object.assign({}, opts, {
+                    _skipTargetBlend: true,
+                    filter: null
+                });
+
+                const uniqueTargetIDs = [];
+                for (const config of targetBlendConfigs) {
+                    if (!uniqueTargetIDs.includes(config.drawableID)) {
+                        uniqueTargetIDs.push(config.drawableID);
+                    }
+                }
+
+                gl.clearStencil(0);
+                gl.clear(gl.STENCIL_BUFFER_BIT);
+                gl.enable(gl.STENCIL_TEST);
+                gl.stencilMask(0xFF);
+                gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
+                gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+
+                gl.colorMask(false, false, false, false);
+                this._drawThese(uniqueTargetIDs, ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
+                gl.colorMask(true, true, true, true);
+
+                // Fallback/default mode: applies to pixels not covered by accounted targets.
+                gl.stencilMask(0x00);
+                gl.stencilFunc(gl.NOTEQUAL, 1, 0xFF);
+                gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+                this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                    _forceBlendMode: drawableBlendMode,
+                    _forceBlendAmount: drawableBlendAmount
+                }));
+
+                // Target-specific mode overrides: apply per target overlap.
+                for (const config of targetBlendConfigs) {
+                    gl.clearStencil(0);
+                    gl.clear(gl.STENCIL_BUFFER_BIT);
+                    gl.stencilMask(0xFF);
+                    gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
+                    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+
+                    gl.colorMask(false, false, false, false);
+                    this._drawThese([config.drawableID], ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
+                    gl.colorMask(true, true, true, true);
+
+                    gl.stencilMask(0x00);
+                    gl.stencilFunc(gl.EQUAL, 1, 0xFF);
+                    gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+
+                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                        _forceBlendMode: config.mode,
+                        _forceBlendAmount: drawableBlendAmount
+                    }));
+                }
+
+                gl.disable(gl.STENCIL_TEST);
+                gl.stencilMask(0xFF);
+                continue;
+            }
 
             const uniforms = {};
 
