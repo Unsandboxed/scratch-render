@@ -1104,7 +1104,7 @@ class RenderWebGL extends EventEmitter {
         for (let i = 0; i < this._drawList.length; i++) {
             const drawableId = this._drawList[i];
             const drawable = this._allDrawables[drawableId];
-            if (drawable._skin === skin) {
+            if (drawable._skin === skin || drawable.clipMaskSkin === skin) {
                 drawable._skinWasAltered();
             }
         }
@@ -1943,6 +1943,39 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Update a drawable's clip mask skin.
+     * @param {number} drawableID The drawable's id.
+     * @param {?number} skinId The mask skin to update to, or null to clear.
+     */
+    updateDrawableClipMaskSkinId (drawableID, skinId) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateClipMaskSkin(typeof skinId === 'number' ? this._allSkins[skinId] : null);
+    }
+
+    /**
+     * Update the stage-coordinate position of a drawable's clip mask.
+     * @param {number} drawableID The drawable's id.
+     * @param {?Array<number>} position [x, y] in stage coordinates, or null to follow the sprite.
+     */
+    updateDrawableClipMaskPosition (drawableID, position) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateClipMaskPosition(position);
+    }
+
+    /**
+     * Update a drawable's stage-coordinate clipping rectangle.
+     * @param {number} drawableID The drawable's id.
+     * @param {?Array<number>} box [x1, y1, x2, y2] in stage pixels, or null to clear.
+     */
+    updateDrawableClipBox (drawableID, box) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateClipBox(box);
+    }
+
+    /**
      * Update a drawable's position.
      * @param {number} drawableID The drawable's id.
      * @param {Array.<number>} position The new position.
@@ -2100,6 +2133,9 @@ class RenderWebGL extends EventEmitter {
         }
         if ('skinId' in properties) {
             this.updateDrawableSkinId(drawableID, properties.skinId);
+        }
+        if ('clipMaskSkinId' in properties) {
+            this.updateDrawableClipMaskSkinId(drawableID, properties.clipMaskSkinId);
         }
         drawable.updateProperties(properties);
     }
@@ -2429,6 +2465,14 @@ class RenderWebGL extends EventEmitter {
                 drawable.skin.getUniforms(drawableScale),
                 drawable.getUniforms());
 
+            if (drawable.clipMaskSkin) {
+                const maskTexture = drawable.clipMaskSkin.getTexture(drawableScale);
+                uniforms.u_maskSkin = maskTexture;
+                uniforms.u_hasMask = maskTexture ? 1 : 0;
+            } else {
+                uniforms.u_hasMask = 0;
+            }
+
             // Apply extra uniforms after the Drawable's, to allow overwriting.
             if (opts.extraUniforms) {
                 Object.assign(uniforms, opts.extraUniforms);
@@ -2438,6 +2482,14 @@ class RenderWebGL extends EventEmitter {
                 twgl.setTextureParameters(
                     gl, uniforms.u_skin, {
                         minMag: drawable.skin.useNearest(drawableScale, drawable) ? gl.NEAREST : gl.LINEAR
+                    }
+                );
+            }
+
+            if (uniforms.u_maskSkin) {
+                twgl.setTextureParameters(
+                    gl, uniforms.u_maskSkin, {
+                        minMag: drawable.clipMaskSkin.useNearest(drawableScale, drawable) ? gl.NEAREST : gl.LINEAR
                     }
                 );
             }

@@ -46,9 +46,18 @@ uniform vec4 u_backgroundColor;
 #endif // DRAW_MODE_background
 
 uniform sampler2D u_skin;
+uniform sampler2D u_maskSkin;
+uniform float u_hasMask;
+uniform float u_hasClipBox;
+uniform vec4 u_clipBox;
 
 #ifndef DRAW_MODE_background
 varying vec2 v_texCoord;
+#endif
+
+#if !(defined(DRAW_MODE_line) || defined(DRAW_MODE_background))
+varying vec2 v_maskTexCoord;
+varying vec2 v_stagePos;
 #endif
 
 // Add this to divisors to prevent division by 0, which results in NaNs propagating through calculations.
@@ -61,6 +70,14 @@ vec4 sampleSpriteTexel(vec2 uv)
 		return vec4(0.0);
 	}
 	return texture2D(u_skin, uv);
+}
+
+float sampleMaskAlpha(vec2 uv)
+{
+	if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+		return 0.0;
+	}
+	return texture2D(u_maskSkin, uv).a;
 }
 
 #if !defined(DRAW_MODE_silhouette) && (defined(ENABLE_color))
@@ -127,6 +144,14 @@ void main()
 {
 	#if !(defined(DRAW_MODE_line) || defined(DRAW_MODE_background))
 	vec2 texcoord0 = v_texCoord;
+
+	if (u_hasClipBox > 0.5) {
+		if (v_stagePos.x < u_clipBox.x || v_stagePos.x > u_clipBox.z ||
+			v_stagePos.y < u_clipBox.y || v_stagePos.y > u_clipBox.w) {
+			gl_FragColor = vec4(0.0);
+			return;
+		}
+	}
 
 	#ifdef ENABLE_mosaic
 	texcoord0 = fract(u_mosaic * texcoord0);
@@ -210,6 +235,10 @@ void main()
 	#ifdef ENABLE_ghost
 	gl_FragColor *= u_ghost;
 	#endif // ENABLE_ghost
+
+	if (u_hasMask > 0.5) {
+		gl_FragColor *= sampleMaskAlpha(v_maskTexCoord);
+	}
 
 	#ifdef DRAW_MODE_silhouette
 	// Discard fully transparent pixels for stencil test

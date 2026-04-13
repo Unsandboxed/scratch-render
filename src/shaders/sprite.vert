@@ -19,13 +19,21 @@ const float epsilon = 1e-3;
 #if !(defined(DRAW_MODE_line) || defined(DRAW_MODE_background))
 uniform mat4 u_projectionMatrix;
 uniform mat4 u_modelMatrix;
+uniform mat4 u_maskInverseMatrix;
 uniform vec2 u_effectPadding;
+uniform float u_hasMask;
+uniform float u_hasClipBox;
+uniform vec4 u_clipBox;
 attribute vec2 a_texCoord;
 #endif
 
 attribute vec2 a_position;
 
 varying vec2 v_texCoord;
+#if !(defined(DRAW_MODE_line) || defined(DRAW_MODE_background))
+varying vec2 v_maskTexCoord;
+varying vec2 v_stagePos;
+#endif
 
 void main() {
 	#ifdef DRAW_MODE_line
@@ -78,7 +86,14 @@ void main() {
 	gl_Position = vec4(a_position * 2.0, 0, 1);
 	#else
 	vec2 position = a_position * (vec2(1.0) + (u_effectPadding * 2.0));
-	gl_Position = u_projectionMatrix * u_modelMatrix * vec4(position, 0, 1);
+	vec4 worldPosition = u_modelMatrix * vec4(position, 0, 1);
+	gl_Position = u_projectionMatrix * worldPosition;
 	v_texCoord = (a_texCoord * (vec2(1.0) + (u_effectPadding * 2.0))) - u_effectPadding;
+	v_maskTexCoord = vec2(0.0);
+	if (u_hasMask > 0.5) {
+		vec4 maskPosition = u_maskInverseMatrix * worldPosition;
+		v_maskTexCoord = vec2(0.5 - maskPosition.x, maskPosition.y + 0.5);
+	}
+	v_stagePos = worldPosition.xy;
 	#endif
 }

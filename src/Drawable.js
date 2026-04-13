@@ -12,8 +12,10 @@ const log = require('./util/log');
  * @type {twgl.v3}
  */
 const __isTouchingPosition = twgl.v3.create();
+const __clipMaskTouchingPosition = twgl.v3.create();
 const FLOATING_POINT_ERROR_ALLOWANCE = 1e-6;
 const __effectBoundsMatrix = twgl.m4.identity();
+const __clipMaskBounds = new Rectangle();
 
 /**
  * Convert a scratch space location into a texture space float.  Uses the
@@ -55,6 +57,41 @@ const getLocalPosition = (drawable, vec) => {
     return localPosition;
 };
 
+const getClipMaskLocalPosition = (drawable, vec) => {
+    const localPosition = __clipMaskTouchingPosition;
+    const v0 = vec[0];
+    const v1 = vec[1];
+    const m = drawable._clipMaskInverseMatrix;
+    const d = (v0 * m[3]) + (v1 * m[7]) + m[15];
+
+    localPosition[0] = 0.5 - (((v0 * m[0]) + (v1 * m[4]) + m[12]) / d);
+    localPosition[1] = (((v0 * m[1]) + (v1 * m[5]) + m[13]) / d) + 0.5;
+
+    if (Math.abs(localPosition[0]) < FLOATING_POINT_ERROR_ALLOWANCE) localPosition[0] = 0;
+    if (Math.abs(localPosition[1]) < FLOATING_POINT_ERROR_ALLOWANCE) localPosition[1] = 0;
+
+    return localPosition;
+};
+
+const isTouchingClipMask = (drawable, vec) => {
+    const clipMaskSkin = drawable._clipMaskSkin;
+    if (!clipMaskSkin) {
+        return true;
+    }
+
+    const localPosition = getClipMaskLocalPosition(drawable, vec);
+    if (localPosition[0] < 0 || localPosition[1] < 0 ||
+        localPosition[0] > 1 || localPosition[1] > 1) {
+        return false;
+    }
+
+    if (clipMaskSkin.useNearest(drawable._scale, drawable)) {
+        return clipMaskSkin.isTouchingNearest(localPosition);
+    }
+
+    return clipMaskSkin.isTouchingLinear(localPosition);
+};
+
 class Drawable {
     /**
      * An object which can be drawn by the renderer.
@@ -88,6 +125,30 @@ class Drawable {
             u_effectPadding: [0, 0],
 
             /**
+             * Whether this drawable should be clipped by a secondary skin.
+             * @type {number}
+             */
+            u_hasMask: 0,
+
+            /**
+             * Inverse model matrix for the current clip mask skin.
+             * @type {module:twgl/m4.Mat4}
+             */
+            u_maskInverseMatrix: twgl.m4.identity(),
+
+            /**
+             * Whether this drawable has a stage-coordinate clipping rectangle.
+             * @type {number}
+             */
+            u_hasClipBox: 0,
+
+            /**
+             * Stage-coordinate clipping rectangle [x1, y1, x2, y2].
+             * @type {Array<number>}
+             */
+            u_clipBox: [0, 0, 0, 0],
+
+            /**
              * The color to use in the silhouette draw mode.
              * @type {Array<number>}
              */
@@ -107,8 +168,13 @@ class Drawable {
         this._scale = twgl.v3.create(100, 100);
         this._skew = twgl.v3.create(0, 0);
         this._effectPadding = twgl.v3.create(0, 0);
+        this._clipMaskModelMatrix = twgl.m4.identity();
+        this._clipMaskInverseMatrix = twgl.m4.identity();
+        this._clipMaskSkin = null;
+        this._clipMaskPosition = null; // null means follow sprite
         this._direction = 90;
         this._transformDirty = true;
+        this._clipMaskTransformDirty = true;
         this._rotationMatrix = twgl.m4.identity();
         this._rotationTransformDirty = true;
         this._rotationAdjusted = twgl.v3.create();
@@ -166,6 +232,7 @@ class Drawable {
      */
     setTransformDirty () {
         this._transformDirty = true;
+        this._clipMaskTransformDirty = true;
         this._inverseTransformDirty = true;
         this._transformedHullDirty = true;
     }
@@ -182,6 +249,13 @@ class Drawable {
      */
     get skin () {
         return this._skin;
+    }
+
+    /**
+     * @returns {?Skin} the current clip mask skin for this Drawable.
+     */
+    get clipMaskSkin () {
+        return this._clipMaskSkin;
     }
 
     /**
@@ -215,6 +289,7 @@ class Drawable {
         if (this._transformDirty) {
             this._calculateTransform();
         }
+        this._updateClipMaskMatrix();
         return this._uniforms;
     }
 
@@ -285,6 +360,48 @@ class Drawable {
             this._renderer.dirty = true;
             this.setTransformDirty();
         }
+    }
+
+    /**
+     * Update or clear the stage-coordinate clipping rectangle.
+     * @param {?Array<number>} box [x1, y1, x2, y2] in stage pixels, or null to clear.
+     */
+    updateClipBox (box) {
+        if (box) {
+            this._uniforms.u_hasClipBox = 1;
+            this._uniforms.u_clipBox[0] = box[0];
+            this._uniforms.u_clipBox[1] = box[1];
+            this._uniforms.u_clipBox[2] = box[2];
+            this._uniforms.u_clipBox[3] = box[3];
+        } else {
+            this._uniforms.u_hasClipBox = 0;
+        }
+        this._renderer.dirty = true;
+    }
+
+    /**
+     * Update the clip mask skin if it is different.
+     * @param {?Skin} clipMaskSkin A new clip mask skin.
+     */
+    updateClipMaskSkin (clipMaskSkin) {
+        if (this._clipMaskSkin !== clipMaskSkin) {
+            this._clipMaskSkin = clipMaskSkin;
+            this._uniforms.u_hasMask = clipMaskSkin ? 1 : 0;
+            this._renderer.dirty = true;
+            this.setConvexHullDirty();
+            this.setTransformDirty();
+        }
+    }
+
+    /**
+     * Set or clear the stage-coordinate position for the clip mask.
+     * Pass null to make the mask follow the sprite.
+     * @param {?Array<number>} position [x, y] in stage coordinates, or null.
+     */
+    updateClipMaskPosition (position) {
+        this._clipMaskPosition = position ? [position[0], position[1]] : null;
+        this._clipMaskTransformDirty = true;
+        this._renderer.dirty = true;
     }
 
     /**
@@ -390,6 +507,9 @@ class Drawable {
         }
         if ('visible' in properties) {
             this.updateVisible(properties.visible);
+        }
+        if ('clipMaskSkin' in properties) {
+            this.updateClipMaskSkin(properties.clipMaskSkin);
         }
         const numEffects = ShaderManager.EFFECTS.length;
         for (let index = 0; index < numEffects; ++index) {
@@ -551,6 +671,95 @@ class Drawable {
     }
 
     /**
+     * Update the cached inverse matrix for the current clip mask skin.
+     * @private
+     */
+    _updateClipMaskMatrix () {
+        if (!this._clipMaskSkin) {
+            this._uniforms.u_hasMask = 0;
+            this._clipMaskTransformDirty = false;
+            return;
+        }
+
+        if (!this._clipMaskTransformDirty) {
+            return;
+        }
+
+        if (this._rotationTransformDirty) {
+            const rotation = (270 - this._direction) * Math.PI / 180;
+            const c = Math.cos(rotation);
+            const s = Math.sin(rotation);
+            this._rotationMatrix[0] = c;
+            this._rotationMatrix[1] = s;
+            this._rotationMatrix[4] = -s;
+            this._rotationMatrix[5] = c;
+            this._rotationTransformDirty = false;
+        }
+
+        const maskSkin = this._clipMaskSkin;
+        const rotationCenter = maskSkin.rotationCenter;
+        const skinSize = maskSkin.size;
+        const scalePercent0 = this._scale[0];
+        const scalePercent1 = this._scale[1];
+        const maskScale0 = skinSize[0] * scalePercent0 / 100;
+        const maskScale1 = skinSize[1] * scalePercent1 / 100;
+        const adjusted0 = (rotationCenter[0] - (skinSize[0] / 2)) * scalePercent0 / 100;
+        const adjusted1 = ((rotationCenter[1] - (skinSize[1] / 2)) * scalePercent1 / 100) * -1;
+        const skewRadians0 = this._skew[0] * Math.PI / 180;
+        const skewRadians1 = this._skew[1] * Math.PI / 180;
+        const skewFactor0 = Math.tan(skewRadians0);
+        const skewFactor1 = Math.tan(skewRadians1);
+        const scaledSkew0 = maskScale0 * skewFactor0;
+        const scaledSkew1 = maskScale1 * skewFactor1;
+        const rotation00 = this._rotationMatrix[0];
+        const rotation01 = this._rotationMatrix[1];
+        const rotation10 = this._rotationMatrix[4];
+        const rotation11 = this._rotationMatrix[5];
+        const maskPos = this._clipMaskPosition;
+        const position0 = maskPos ? maskPos[0] : this._position[0];
+        const position1 = maskPos ? maskPos[1] : this._position[1];
+        const modelMatrix = this._clipMaskModelMatrix;
+
+        modelMatrix[0] = (maskScale0 * rotation00) + (scaledSkew1 * rotation10);
+        modelMatrix[1] = (maskScale0 * rotation01) + (scaledSkew1 * rotation11);
+        modelMatrix[4] = (scaledSkew0 * rotation00) + (maskScale1 * rotation10);
+        modelMatrix[5] = (scaledSkew0 * rotation01) + (maskScale1 * rotation11);
+        modelMatrix[12] = (rotation00 * adjusted0) + (rotation10 * adjusted1) + position0;
+        modelMatrix[13] = (rotation01 * adjusted0) + (rotation11 * adjusted1) + position1;
+
+        const inverse = this._clipMaskInverseMatrix;
+        twgl.m4.copy(modelMatrix, inverse);
+        inverse[10] = 1;
+        twgl.m4.inverse(inverse, inverse);
+        twgl.m4.copy(inverse, this._uniforms.u_maskInverseMatrix);
+
+        this._uniforms.u_hasMask = 1;
+        this._clipMaskTransformDirty = false;
+    }
+
+    /**
+     * Intersect bounds with the current clip mask AABB.
+     * @param {!Rectangle} bounds Bounds to intersect.
+     * @returns {!Rectangle} Intersected bounds.
+     * @private
+     */
+    _applyClipMaskBounds (bounds) {
+        if (!this._clipMaskSkin) {
+            return bounds;
+        }
+
+        this._updateClipMaskMatrix();
+        __clipMaskBounds.initFromModelMatrix(this._clipMaskModelMatrix);
+
+        if (!bounds.intersects(__clipMaskBounds)) {
+            bounds.initFromBounds(this._position[0], this._position[0], this._position[1], this._position[1]);
+            return bounds;
+        }
+
+        return Rectangle.intersect(bounds, __clipMaskBounds, bounds);
+    }
+
+    /**
      * Whether the Drawable needs convex hull points provided by the renderer.
      * @return {boolean} True when no convex hull known, or it's dirty.
      */
@@ -606,11 +815,11 @@ class Drawable {
     }
 
     _isTouchingNearest (vec) {
-        return this.skin.isTouchingNearest(getLocalPosition(this, vec));
+        return this.skin.isTouchingNearest(getLocalPosition(this, vec)) && isTouchingClipMask(this, vec);
     }
 
     _isTouchingLinear (vec) {
-        return this.skin.isTouchingLinear(getLocalPosition(this, vec));
+        return this.skin.isTouchingLinear(getLocalPosition(this, vec)) && isTouchingClipMask(this, vec);
     }
 
     /**
@@ -635,7 +844,7 @@ class Drawable {
         // Search through transformed points to generate box on axes.
         result = result || new Rectangle();
         result.initFromPointsAABB(transformedHullPoints);
-        return result;
+        return this._applyClipMaskBounds(result);
     }
 
     /**
@@ -662,7 +871,7 @@ class Drawable {
         // Search through filtered points to generate box on axes.
         result = result || new Rectangle();
         result.initFromPointsAABB(filteredHullPoints);
-        return result;
+        return this._applyClipMaskBounds(result);
     }
 
     /**
@@ -682,7 +891,7 @@ class Drawable {
         const tm = this._getBoundsModelMatrix();
         result = result || new Rectangle();
         result.initFromModelMatrix(tm);
-        return result;
+        return this._applyClipMaskBounds(result);
     }
 
     /**
@@ -782,6 +991,10 @@ class Drawable {
         // CPU rendering always occurs at the "native" size, so no need to scale up this._scale
         if (this.skin) {
             this.skin.updateSilhouette(this._scale);
+            if (this._clipMaskSkin) {
+                this._updateClipMaskMatrix();
+                this._clipMaskSkin.updateSilhouette(this._scale);
+            }
 
             if (this.skin.useNearest(this._scale, this)) {
                 this.isTouching = this._isTouchingNearest;
@@ -851,6 +1064,14 @@ class Drawable {
         const localPosition = getLocalPosition(drawable, vec);
         if (localPosition[0] < 0 || localPosition[1] < 0 ||
             localPosition[0] > 1 || localPosition[1] > 1) {
+            dst[0] = 0;
+            dst[1] = 0;
+            dst[2] = 0;
+            dst[3] = 0;
+            return dst;
+        }
+
+        if (!isTouchingClipMask(drawable, vec)) {
             dst[0] = 0;
             dst[1] = 0;
             dst[2] = 0;
