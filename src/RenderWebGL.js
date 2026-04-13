@@ -9,6 +9,7 @@ const BitmapSkin = require('./BitmapSkin');
 const Drawable = require('./Drawable');
 const Rectangle = require('./Rectangle');
 const PenSkin = require('./PenSkin');
+const ParticleSkin = require('./ParticleSkin');
 const RenderConstants = require('./RenderConstants');
 const ShaderManager = require('./ShaderManager');
 const SVGSkin = require('./SVGSkin');
@@ -331,10 +332,27 @@ class RenderWebGL extends EventEmitter {
             BitmapSkin,
             TextBubbleSkin,
             PenSkin,
+            ParticleSkin,
             SVGSkin,
             CanvasMeasurementProvider,
             Rectangle
         };
+
+        // Renderer capability marker used by Unsandboxed extensions that require custom renderer APIs.
+        this._unsandboxedRendererInfo = {
+            vendor: 'unsandboxed',
+            particleApiVersion: 1,
+            supportsParticleLayers: true,
+            supportsParticleLayerBlend: true
+        };
+    }
+
+    /**
+     * Report Unsandboxed renderer capabilities for extension feature-gating.
+     * @returns {{vendor: string, particleApiVersion: number, supportsParticleLayers: boolean, supportsParticleLayerBlend: boolean}}
+     */
+    getUnsandboxedRendererInfo () {
+        return this._unsandboxedRendererInfo;
     }
 
     // tw: implement high quality pen option
@@ -792,6 +810,179 @@ class RenderWebGL extends EventEmitter {
         // tw: high quality pen may have been enabled before the pen skin was created
         this._updateRenderQuality();
         return skinId;
+    }
+
+    /**
+     * Create a new ParticleSkin - a skin specialized for particle rendering.
+     * @returns {!int} the ID for the new skin.
+     */
+    createParticleSkin () {
+        const skinId = this._nextSkinId++;
+        const newSkin = new ParticleSkin(skinId, this);
+        this._allSkins[skinId] = newSkin;
+        return skinId;
+    }
+
+    /**
+     * Create a particle render layer (skin + drawable) owned by the renderer.
+     * @param {string} [group='sprite'] layer group to place the drawable into.
+     * @returns {{skinId: number, drawableId: number}} handle to the created layer.
+     */
+    createParticleLayer (group = 'sprite') {
+        const skinId = this.createParticleSkin();
+        const drawableId = this.createDrawable(group);
+        this.markDrawableAsNoninteractive(drawableId);
+        this.updateDrawableSkinId(drawableId, skinId);
+        return {skinId, drawableId};
+    }
+
+    /**
+     * Create a set of particle render layers (skin + drawable per layer).
+     * @param {number} layerCount number of layers to create.
+     * @param {string} [group='sprite'] layer group to place the drawables into.
+     * @returns {{group: string, layers: Array<{skinId: number, drawableId: number}>}} handle for the layer set.
+     */
+    createParticleLayerSet (layerCount, group = 'sprite') {
+        const count = Math.max(1, Math.round(layerCount || 1));
+        const layers = [];
+        for (let i = 0; i < count; i++) {
+            layers.push(this.createParticleLayer(group));
+        }
+        return {group, layers};
+    }
+
+    /**
+     * Destroy a particle render layer previously created by createParticleLayer.
+     * @param {{skinId: number, drawableId: number}} layerHandle handle returned by createParticleLayer.
+     * @param {string} [group='sprite'] layer group that the drawable belongs to.
+     */
+    destroyParticleLayer (layerHandle, group = 'sprite') {
+        if (!layerHandle || typeof layerHandle !== 'object') return;
+        const {skinId, drawableId} = layerHandle;
+        if (typeof drawableId === 'number') {
+            this.destroyDrawable(drawableId, group);
+        }
+        if (typeof skinId === 'number') {
+            this.destroySkin(skinId);
+        }
+    }
+
+    /**
+     * Destroy a particle layer set previously created by createParticleLayerSet.
+     * @param {{group: string, layers: Array<{skinId: number, drawableId: number}>}} layerSetHandle handle returned by createParticleLayerSet.
+     * @param {string} [group='sprite'] fallback group for drawables.
+     */
+    destroyParticleLayerSet (layerSetHandle, group = 'sprite') {
+        if (!layerSetHandle || !Array.isArray(layerSetHandle.layers)) return;
+        const targetGroup = layerSetHandle.group || group;
+        for (const layer of layerSetHandle.layers) {
+            this.destroyParticleLayer(layer, targetGroup);
+        }
+    }
+
+    /**
+     * Set blending for a particle layer drawable.
+     * @param {number} drawableId drawable id for particle layer.
+     * @param {string} mode blend mode.
+     * @param {number} [amount=100] blend amount percentage.
+     */
+    setParticleLayerBlend (drawableId, mode, amount = 100) {
+        this.updateDrawableBlendMode(drawableId, mode || 'default');
+        this.updateDrawableBlendAmount(drawableId, amount);
+    }
+
+    /**
+     * Set blend mode for a specific layer in a particle layer set.
+     * @param {{layers: Array<{drawableId: number}>}} layerSetHandle layer set handle.
+     * @param {number} layerIndex index of the layer to configure.
+     * @param {string} mode blend mode.
+     * @param {number} [amount=100] blend amount percentage.
+     */
+    setParticleLayerSetBlend (layerSetHandle, layerIndex, mode, amount = 100) {
+        if (!layerSetHandle || !Array.isArray(layerSetHandle.layers)) return;
+        const layer = layerSetHandle.layers[layerIndex];
+        if (!layer || typeof layer.drawableId !== 'number') return;
+        this.setParticleLayerBlend(layer.drawableId, mode, amount);
+    }
+
+    /**
+     * Clear all skins in a particle layer set.
+     * @param {{layers: Array<{skinId: number}>}} layerSetHandle layer set handle.
+     */
+    clearParticleLayerSet (layerSetHandle) {
+        if (!layerSetHandle || !Array.isArray(layerSetHandle.layers)) return;
+        for (const layer of layerSetHandle.layers) {
+            if (layer && typeof layer.skinId === 'number') {
+                this.particleClear(layer.skinId);
+            }
+        }
+    }
+
+    /**
+     * Draw particle points into a specific layer of a particle layer set.
+     * @param {{layers: Array<{skinId: number}>}} layerSetHandle layer set handle.
+     * @param {number} layerIndex index of the destination layer.
+     * @param {{diameter?: number, color4f?: Array<number>}} particleAttributes point draw attributes.
+     * @param {Float32Array|Array<number>} points interleaved x/y pairs.
+     * @param {number=} count optional number of points to draw.
+     */
+    particleLayerSetPoints (layerSetHandle, layerIndex, particleAttributes, points, count) {
+        if (!layerSetHandle || !Array.isArray(layerSetHandle.layers)) return;
+        const layer = layerSetHandle.layers[layerIndex];
+        if (!layer || typeof layer.skinId !== 'number') return;
+        this.particlePoints(layer.skinId, particleAttributes, points, count);
+    }
+
+    /**
+     * Draw velocity-oriented particle streaks into a specific layer of a particle layer set.
+     * @param {{layers: Array<{skinId: number}>}} layerSetHandle layer set handle.
+     * @param {number} layerIndex index of the destination layer.
+     * @param {{diameter?: number, color4f?: Array<number>}} particleAttributes streak draw attributes.
+     * @param {Float32Array|Array<number>} points interleaved x/y pairs.
+     * @param {Float32Array|Array<number>} velocities interleaved vx/vy pairs.
+     * @param {number=} count optional number of points to draw.
+     * @param {number=} stretch scalar applied to velocity for streak length.
+     */
+    particleLayerSetVelocityPoints (layerSetHandle, layerIndex, particleAttributes, points, velocities, count, stretch) {
+        if (!layerSetHandle || !Array.isArray(layerSetHandle.layers)) return;
+        const layer = layerSetHandle.layers[layerIndex];
+        if (!layer || typeof layer.skinId !== 'number') return;
+        this.particleVelocityPoints(layer.skinId, particleAttributes, points, velocities, count, stretch);
+    }
+
+    /**
+     * Draw flame-styled particles into a specific layer of a particle layer set.
+     * @param {{layers: Array<{skinId: number}>}} layerSetHandle layer set handle.
+     * @param {number} layerIndex index of the destination layer.
+     * @param {{diameter?: number, color4f?: Array<number>}} particleAttributes draw attributes.
+     * @param {Float32Array|Array<number>} points interleaved x/y pairs.
+     * @param {Float32Array|Array<number>} velocities interleaved vx/vy pairs.
+     * @param {Float32Array|Array<number>} seeds per-particle seed values.
+     * @param {number=} count optional number of particles to draw.
+     * @param {object=} options flame rendering options.
+     */
+    particleLayerSetFlamePoints (layerSetHandle, layerIndex, particleAttributes, points, velocities, seeds, count, options) {
+        if (!layerSetHandle || !Array.isArray(layerSetHandle.layers)) return;
+        const layer = layerSetHandle.layers[layerIndex];
+        if (!layer || typeof layer.skinId !== 'number') return;
+        this.particleFlamePoints(layer.skinId, particleAttributes, points, velocities, seeds, count, options);
+    }
+
+    /**
+     * Reorder all drawables in a particle layer set while keeping layer order contiguous.
+     * @param {{group?: string, layers: Array<{drawableId: number}>}} layerSetHandle layer set handle.
+     * @param {number} order target order for the first layer drawable.
+     * @param {string} [group='sprite'] fallback draw-list group.
+     */
+    setParticleLayerSetOrder (layerSetHandle, order, group = 'sprite') {
+        if (!layerSetHandle || !Array.isArray(layerSetHandle.layers)) return;
+        const targetGroup = layerSetHandle.group || group;
+        for (let i = 0; i < layerSetHandle.layers.length; i++) {
+            const layer = layerSetHandle.layers[i];
+            if (!layer || typeof layer.drawableId !== 'number') continue;
+            const targetOrder = Number.isFinite(order) ? (order + i) : order;
+            this.setDrawableOrder(layer.drawableId, targetOrder, targetGroup);
+        }
     }
 
     /**
@@ -2243,6 +2434,178 @@ class RenderWebGL extends EventEmitter {
         this.dirty = true;
         const skin = /** @type {PenSkin} */ this._allSkins[penSkinID];
         skin.drawPoint(penAttributes, x, y);
+    }
+
+    /**
+     * Draw many points on a pen layer in one call.
+     * @param {int} penSkinID - the unique ID of a Pen Skin.
+     * @param {PenAttributes} penAttributes - how points should be drawn.
+     * @param {Float32Array|Array<number>} points - interleaved x/y pairs.
+     * @param {number=} count - optional number of points to draw.
+     */
+    penPoints (penSkinID, penAttributes, points, count) {
+        this.dirty = true;
+        const skin = /** @type {PenSkin} */ this._allSkins[penSkinID];
+        skin.drawPoints(penAttributes, points, count);
+    }
+
+    /**
+     * Clear a particle layer.
+     * @param {int} particleSkinID - the unique ID of a ParticleSkin.
+     */
+    particleClear (particleSkinID) {
+        this.dirty = true;
+        const skin = /** @type {ParticleSkin} */ this._allSkins[particleSkinID];
+        skin.clear();
+    }
+
+    /**
+     * Draw many particle points in one call.
+     * @param {int} particleSkinID - the unique ID of a ParticleSkin.
+     * @param {{diameter?: number, color4f?: Array<number>}} particleAttributes - how points should be drawn.
+     * @param {Float32Array|Array<number>} points - interleaved x/y pairs.
+     * @param {number=} count - optional number of points to draw.
+     */
+    particlePoints (particleSkinID, particleAttributes, points, count) {
+        this.dirty = true;
+        const skin = /** @type {ParticleSkin} */ this._allSkins[particleSkinID];
+        skin.drawPoints(particleAttributes, points, count);
+    }
+
+    /**
+     * Draw velocity-oriented particle streaks in one call.
+     * @param {int} particleSkinID - the unique ID of a ParticleSkin.
+     * @param {{diameter?: number, color4f?: Array<number>}} particleAttributes - how streaks should be drawn.
+     * @param {Float32Array|Array<number>} points - interleaved x/y pairs.
+     * @param {Float32Array|Array<number>} velocities - interleaved vx/vy pairs.
+     * @param {number=} count - optional number of streaks to draw.
+     * @param {number=} stretch - scalar applied to velocity for streak length.
+     */
+    particleVelocityPoints (particleSkinID, particleAttributes, points, velocities, count, stretch) {
+        this.dirty = true;
+        const skin = /** @type {ParticleSkin} */ this._allSkins[particleSkinID];
+        skin.drawVelocityPoints(particleAttributes, points, velocities, count, stretch);
+    }
+
+    /**
+     * Draw flame-styled particles in one call.
+     * @param {int} particleSkinID - the unique ID of a ParticleSkin.
+     * @param {{diameter?: number, color4f?: Array<number>}} particleAttributes draw attributes.
+     * @param {Float32Array|Array<number>} points interleaved x/y pairs.
+     * @param {Float32Array|Array<number>} velocities interleaved vx/vy pairs.
+     * @param {Float32Array|Array<number>} seeds per-particle seed values.
+     * @param {number=} count optional number of particles to draw.
+     * @param {object=} options flame rendering options.
+     */
+    particleFlamePoints (particleSkinID, particleAttributes, points, velocities, seeds, count, options) {
+        this.dirty = true;
+        const skin = /** @type {ParticleSkin} */ this._allSkins[particleSkinID];
+        skin.drawFlamePoints(particleAttributes, points, velocities, seeds, count, options);
+    }
+
+    /**
+     * Emit particles into a pooled particle system.
+     * This keeps the hot spawn loop in renderer space so extensions can stay lightweight.
+     * @param {object} system particle system state object.
+     * @param {number} count requested particles to emit.
+     * @param {function(object): number} pickLayerIndex callback to select a layer index.
+     * @param {function(object, object): Array<number>} sampleSpawnOffset callback to sample spawn offsets.
+     * @returns {number} number of particles emitted.
+     */
+    particleEmitToPool (system, count, pickLayerIndex, sampleSpawnOffset) {
+        if (!system || !system.pool || count <= 0) return 0;
+
+        const pool = system.pool;
+        const toSpawn = Math.min(count, pool.freeCount);
+        const dropped = count - toSpawn;
+        if (dropped > 0) {
+            system.droppedParticles += dropped;
+        }
+
+        for (let i = 0; i < toSpawn; i++) {
+            const id = pool.freeStack[--pool.freeCount];
+            pool.alive[id] = 1;
+            pool.liveCount += 1;
+
+            const layerIndex = pickLayerIndex(system);
+            const layer = system.layers[layerIndex] || system.layers[0];
+            pool.layerIndex[id] = layerIndex;
+
+            const spread = Math.min(360, Math.max(0, layer.spread || 0));
+            const baseAngle = ((layer.direction || 0) * Math.PI) / 180;
+            const angle = baseAngle + (((Math.random() - 0.5) * spread * Math.PI) / 180);
+            const speedJitter = 0.7 + (Math.random() * 0.7);
+            const lifeJitter = 0.75 + (Math.random() * 0.6);
+            const sizeJitter = 0.7 + (Math.random() * 0.8);
+            const speed = system.speed * layer.speedScale * speedJitter;
+            const spawnOffset = sampleSpawnOffset(system, layer);
+
+            pool.x[id] = spawnOffset[0];
+            pool.y[id] = spawnOffset[1];
+            pool.vx[id] = Math.cos(angle) * speed;
+            pool.vy[id] = Math.sin(angle) * speed;
+            pool.age[id] = 0;
+            pool.lifetime[id] = Math.max(0.05, system.lifetime * layer.lifetimeScale * lifeJitter);
+            pool.size[id] = Math.max(0.1, system.size * layer.sizeScale * sizeJitter);
+            pool.seed[id] = Math.random();
+        }
+
+        system.emittedParticles += toSpawn;
+        return toSpawn;
+    }
+
+    /**
+     * Step pooled particles forward by one simulation dt.
+     * @param {object} system particle system state object.
+     * @param {number} dt fixed simulation delta time in seconds.
+     * @param {number} gravityForceScale global gravity scalar from extension/runtime config.
+     * @param {boolean} isFirePreset whether fire-specific shaping should be applied.
+     * @returns {number} live particle count after step.
+     */
+    particleStepPool (system, dt, gravityForceScale, isFirePreset) {
+        if (!system || !system.pool) return 0;
+
+        const pool = system.pool;
+
+        for (let i = 0; i < pool.capacity; i++) {
+            if (!pool.alive[i]) continue;
+
+            const layer = system.layers[pool.layerIndex[i]] || system.layers[0];
+            const gravity = system.gravity * gravityForceScale * (layer ? layer.gravityScale : 1);
+            const drag = Math.max(0, system.drag * (layer ? layer.dragScale : 1));
+            const turbulence = system.turbulence * (layer ? layer.turbulenceScale : 1);
+            const dragFactor = Math.max(0, 1 - (drag * dt));
+
+            pool.age[i] += dt;
+            if (pool.age[i] >= pool.lifetime[i]) {
+                pool.alive[i] = 0;
+                pool.freeStack[pool.freeCount++] = i;
+                pool.liveCount -= 1;
+                continue;
+            }
+
+            const lifeT = pool.lifetime[i] > 0 ? (pool.age[i] / pool.lifetime[i]) : 1;
+            const noiseX = Math.sin((pool.age[i] * 7.0) + (pool.seed[i] * 41.0));
+            const noiseY = Math.cos((pool.age[i] * 5.3) + (pool.seed[i] * 73.0));
+            pool.vx[i] += noiseX * turbulence * dt;
+            pool.vy[i] += (noiseY * turbulence * dt) + (gravity * dt);
+
+            if (isFirePreset) {
+                const columnPull = Math.min(95, Math.max(-95, -pool.x[i] * 1.45));
+                const flicker = Math.sin((pool.age[i] * 18) + (pool.seed[i] * 80)) * (32 + (20 * (1 - lifeT)));
+                const buoyancyBoost = (88 * (1 - lifeT)) + 30;
+                pool.vx[i] += (columnPull + flicker) * dt;
+                pool.vy[i] += buoyancyBoost * dt;
+            }
+
+            pool.vx[i] *= dragFactor;
+            pool.vy[i] *= dragFactor;
+            pool.x[i] += pool.vx[i] * dt;
+            pool.y[i] += pool.vy[i] * dt;
+        }
+
+        system.emittedParticles = pool.liveCount;
+        return pool.liveCount;
     }
 
     /**

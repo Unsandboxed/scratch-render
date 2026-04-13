@@ -6,16 +6,16 @@ const Skin = require('./Skin');
 const ShaderManager = require('./ShaderManager');
 
 /**
- * Attributes to use when drawing with the pen
- * @typedef {object} PenSkin#PenAttributes
- * @property {number} [diameter] - The size (diameter) of the pen.
- * @property {Array<number>} [color4f] - The pen color as an array of [r,g,b,a], each component in the range [0,1].
+ * Attributes to use when drawing particles.
+ * @typedef {object} ParticleSkin#ParticleAttributes
+ * @property {number} [diameter] - The particle diameter.
+ * @property {Array<number>} [color4f] - Particle color as [r,g,b,a], each component in [0,1].
  */
 
 /**
  * The pen attributes to use when unspecified.
- * @type {PenSkin#PenAttributes}
- * @memberof PenSkin
+ * @type {ParticleSkin#ParticleAttributes}
+ * @memberof ParticleSkin
  * @private
  * @const
  */
@@ -28,9 +28,9 @@ const PEN_ATTRIBUTE_BUFFER_SIZE = 163800;
 const PEN_ATTRIBUTE_STRIDE = 10;
 const PEN_ATTRIBUTE_STRIDE_BYTES = PEN_ATTRIBUTE_STRIDE * 4;
 
-class PenSkin extends Skin {
+class ParticleSkin extends Skin {
     /**
-     * Create a Skin which implements a Scratch pen layer.
+    * Create a skin specialized for high-volume particle rendering.
      * @param {int} id - The unique ID for this Skin.
      * @param {RenderWebGL} renderer - The renderer which will use this Skin.
      * @extends Skin
@@ -229,6 +229,123 @@ class PenSkin extends Skin {
         for (let i = 0; i < pointsToDraw; i++) {
             const j = i * 2;
             this._drawLineOnBuffer(penAttributes, points[j], points[j + 1], points[j], points[j + 1]);
+        }
+
+        this._silhouetteDirty = true;
+    }
+
+    /**
+     * Draw many velocity-oriented particle streaks in one call.
+     * @param {PenAttributes} penAttributes - how streaks should be drawn.
+     * @param {Float32Array|Array<number>} points - interleaved x/y pairs.
+     * @param {Float32Array|Array<number>} velocities - interleaved vx/vy pairs.
+     * @param {number=} count - optional number of points to draw.
+     * @param {number=} stretch - scalar applied to velocity to compute streak length.
+     */
+    drawVelocityPoints (penAttributes, points, velocities, count, stretch = 0.015) {
+        if (!points || !velocities) return;
+
+        const maxFromPoints = Math.floor(points.length / 2);
+        const maxFromVelocities = Math.floor(velocities.length / 2);
+        const maxCount = Math.min(maxFromPoints, maxFromVelocities);
+        const pointsToDraw = typeof count === 'number' ? Math.min(count, maxCount) : maxCount;
+        if (pointsToDraw <= 0) return;
+
+        const stretchAmount = Number.isFinite(stretch) ? stretch : 0.015;
+        const clampedStretch = Math.max(0, Math.min(0.5, stretchAmount));
+        const diameter = penAttributes.diameter || DefaultPenAttributes.diameter;
+        const maxLength = Math.max(6, Math.min(24, 6 + (diameter * 1.8)));
+
+        for (let i = 0; i < pointsToDraw; i++) {
+            const j = i * 2;
+            const x = points[j];
+            const y = points[j + 1];
+            const vx = velocities[j];
+            const vy = velocities[j + 1];
+
+            // Scale by render quality-space velocity and clamp for stability.
+            let dx = vx * clampedStretch;
+            let dy = vy * clampedStretch;
+            const lengthSq = (dx * dx) + (dy * dy);
+            if (lengthSq > (maxLength * maxLength)) {
+                const inv = maxLength / Math.sqrt(lengthSq);
+                dx *= inv;
+                dy *= inv;
+            }
+
+            this._drawLineOnBuffer(penAttributes, x - dx, y - dy, x + dx, y + dy);
+        }
+
+        this._silhouetteDirty = true;
+    }
+
+    /**
+     * Draw flame-styled particles in one call.
+     * This draws a short velocity-aligned core streak plus a faint halo to avoid hard "capsule" artifacts.
+     * @param {PenAttributes} penAttributes - base draw attributes.
+     * @param {Float32Array|Array<number>} points - interleaved x/y pairs.
+     * @param {Float32Array|Array<number>} velocities - interleaved vx/vy pairs.
+     * @param {Float32Array|Array<number>} seeds - per-particle seed values.
+     * @param {number=} count - optional number of particles.
+     * @param {object=} options - flame rendering options.
+     */
+    drawFlamePoints (penAttributes, points, velocities, seeds, count, options = {}) {
+        if (!points || !velocities) return;
+
+        const maxFromPoints = Math.floor(points.length / 2);
+        const maxFromVelocities = Math.floor(velocities.length / 2);
+        const maxFromSeeds = seeds ? seeds.length : maxFromPoints;
+        const maxCount = Math.min(maxFromPoints, maxFromVelocities, maxFromSeeds);
+        const pointsToDraw = typeof count === 'number' ? Math.min(count, maxCount) : maxCount;
+        if (pointsToDraw <= 0) return;
+
+        const baseDiameter = penAttributes.diameter || DefaultPenAttributes.diameter;
+        const color = penAttributes.color4f || DefaultPenAttributes.color4f;
+
+        const coreStretch = Number.isFinite(options.coreStretch) ? options.coreStretch : 0.024;
+        const jitter = Number.isFinite(options.jitter) ? options.jitter : 0.08;
+        const veilAlpha = Number.isFinite(options.veilAlpha) ? options.veilAlpha : 0.32;
+
+        const coreAttributes = {
+            color4f: color,
+            diameter: Math.max(0.35, baseDiameter * 0.7)
+        };
+        const veilAttributes = {
+            color4f: [color[0], color[1], color[2], color[3] * veilAlpha],
+            diameter: Math.max(0.35, baseDiameter * 1.3)
+        };
+
+        const minLength = Math.max(2.2, baseDiameter * 1.6);
+        const maxLength = Math.max(12, baseDiameter * 10);
+
+        for (let i = 0; i < pointsToDraw; i++) {
+            const j = i * 2;
+            const x = points[j];
+            const y = points[j + 1];
+            const vx = velocities[j];
+            const vy = velocities[j + 1];
+            const seed = seeds ? seeds[i] : 0;
+
+            const speed = Math.max(1e-5, Math.sqrt((vx * vx) + (vy * vy)));
+            let ux = vx / speed;
+            let uy = vy / speed;
+
+            const jitterPhase = (seed * 37.17) + (i * 0.07);
+            const angular = Math.sin(jitterPhase) * jitter;
+            const px = -uy;
+            const py = ux;
+            ux += px * angular;
+            uy += py * angular;
+            const norm = Math.max(1e-5, Math.sqrt((ux * ux) + (uy * uy)));
+            ux /= norm;
+            uy /= norm;
+
+            const length = Math.min(maxLength, Math.max(minLength, (speed * coreStretch) + (baseDiameter * 1.8)));
+            const head = length * 0.8;
+            const tail = length * 0.2;
+
+            this._drawLineOnBuffer(coreAttributes, x - (ux * tail), y - (uy * tail), x + (ux * head), y + (uy * head));
+            this._drawLineOnBuffer(veilAttributes, x - (ux * (tail * 0.65)), y - (uy * (tail * 0.65)), x + (ux * (head * 0.85)), y + (uy * (head * 0.85)));
         }
 
         this._silhouetteDirty = true;
@@ -583,4 +700,4 @@ class PenSkin extends Skin {
     }
 }
 
-module.exports = PenSkin;
+module.exports = ParticleSkin;
