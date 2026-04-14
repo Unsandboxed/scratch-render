@@ -258,6 +258,11 @@ class RenderWebGL extends EventEmitter {
 
         // tw: track id of pen skin
         this._penSkinId = null;
+        this._cameraLockedPen = true;
+        this._penDrawablesCameraX = null;
+        this._penDrawablesCameraY = null;
+        this._cameraLockedPenPoints = null;
+        this._penLastCameraBySkin = Object.create(null);
 
         this.useHighQualityRender = false;
 
@@ -522,6 +527,70 @@ class RenderWebGL extends EventEmitter {
         this.cameraState.dir = dir;
 
         this._updateProjection();
+        this._syncPenDrawablesToCamera();
+    }
+
+    _syncPenDrawablesToCamera () {
+        if (!this._cameraLockedPen || this._penSkinId === null) return;
+
+        const penSkin = this._allSkins[this._penSkinId];
+        if (!penSkin) return;
+
+        const x = this.cameraState.x || 0;
+        const y = this.cameraState.y || 0;
+        if (this._penDrawablesCameraX === x && this._penDrawablesCameraY === y) return;
+
+        for (let i = 0; i < this._allDrawables.length; i++) {
+            const drawable = this._allDrawables[i];
+            if (!drawable || drawable.skin !== penSkin) continue;
+            this.updateDrawablePositionExact(i, [x, y]);
+        }
+
+        this._penDrawablesCameraX = x;
+        this._penDrawablesCameraY = y;
+    }
+
+    _cameraLockPenPoint (x, y) {
+        if (!this._cameraLockedPen) return [x, y];
+        return [x - this.cameraState.x, y - this.cameraState.y];
+    }
+
+    _getPenLastCamera (penSkinID) {
+        const last = this._penLastCameraBySkin[penSkinID];
+        if (last && Number.isFinite(last.x) && Number.isFinite(last.y)) {
+            return last;
+        }
+        return {
+            x: this.cameraState.x,
+            y: this.cameraState.y
+        };
+    }
+
+    _setPenLastCamera (penSkinID, x, y) {
+        this._penLastCameraBySkin[penSkinID] = {x, y};
+    }
+
+    _cameraLockPenPoints (points, count) {
+        if (!this._cameraLockedPen || !points) return points;
+
+        const maxFromArray = Math.floor(points.length / 2);
+        const pointsToTransform = typeof count === 'number' ? Math.min(count, maxFromArray) : maxFromArray;
+        if (pointsToTransform <= 0) return points;
+
+        const requiredLength = pointsToTransform * 2;
+        if (!this._cameraLockedPenPoints || this._cameraLockedPenPoints.length < requiredLength) {
+            this._cameraLockedPenPoints = new Float32Array(requiredLength);
+        }
+
+        const output = this._cameraLockedPenPoints;
+        const cx = this.cameraState.x;
+        const cy = this.cameraState.y;
+        for (let i = 0; i < requiredLength; i += 2) {
+            output[i] = points[i] - cx;
+            output[i + 1] = points[i + 1] - cy;
+        }
+
+        return output;
     }
 
     _updateProjection() {
@@ -807,6 +876,8 @@ class RenderWebGL extends EventEmitter {
         this._allSkins[skinId] = newSkin;
         // tw: track id of pen skin
         this._penSkinId = skinId;
+        this._penDrawablesCameraX = null;
+        this._penDrawablesCameraY = null;
         // tw: high quality pen may have been enabled before the pen skin was created
         this._updateRenderQuality();
         return skinId;
@@ -2421,6 +2492,7 @@ class RenderWebGL extends EventEmitter {
         this.dirty = true;
         const skin = /** @type {PenSkin} */ this._allSkins[penSkinID];
         skin.clear();
+        this._setPenLastCamera(penSkinID, this.cameraState.x, this.cameraState.y);
     }
 
     /**
@@ -2432,8 +2504,11 @@ class RenderWebGL extends EventEmitter {
      */
     penPoint (penSkinID, penAttributes, x, y) {
         this.dirty = true;
+        this._syncPenDrawablesToCamera();
         const skin = /** @type {PenSkin} */ this._allSkins[penSkinID];
-        skin.drawPoint(penAttributes, x, y);
+        const point = this._cameraLockPenPoint(x, y);
+        skin.drawPoint(penAttributes, point[0], point[1]);
+        this._setPenLastCamera(penSkinID, this.cameraState.x, this.cameraState.y);
     }
 
     /**
@@ -2445,8 +2520,10 @@ class RenderWebGL extends EventEmitter {
      */
     penPoints (penSkinID, penAttributes, points, count) {
         this.dirty = true;
+        this._syncPenDrawablesToCamera();
         const skin = /** @type {PenSkin} */ this._allSkins[penSkinID];
-        skin.drawPoints(penAttributes, points, count);
+        skin.drawPoints(penAttributes, this._cameraLockPenPoints(points, count), count);
+        this._setPenLastCamera(penSkinID, this.cameraState.x, this.cameraState.y);
     }
 
     /**
@@ -2542,6 +2619,9 @@ class RenderWebGL extends EventEmitter {
 
             pool.x[id] = spawnOffset[0];
             pool.y[id] = spawnOffset[1];
+            if (pool.spawnX) {
+                pool.spawnX[id] = spawnOffset[0];
+            }
             pool.vx[id] = Math.cos(angle) * speed;
             pool.vy[id] = Math.sin(angle) * speed;
             pool.age[id] = 0;
@@ -2566,6 +2646,13 @@ class RenderWebGL extends EventEmitter {
         if (!system || !system.pool) return 0;
 
         const pool = system.pool;
+        const windStrength = Math.max(0, Number(system.windStrength) || 0);
+        const rawExposure = Number(system.windExposure);
+        const windExposure = Number.isFinite(rawExposure) ? Math.max(0, Math.min(1, rawExposure)) : 1;
+        const windGust = Math.max(0, Number(system.windGust) || 0);
+        const windRadians = ((Number(system.windDirection) || 0) * Math.PI) / 180;
+        const baseWindX = Math.cos(windRadians) * windStrength * windExposure;
+        const baseWindY = Math.sin(windRadians) * windStrength * windExposure;
 
         for (let i = 0; i < pool.capacity; i++) {
             if (!pool.alive[i]) continue;
@@ -2574,6 +2661,7 @@ class RenderWebGL extends EventEmitter {
             const gravity = system.gravity * gravityForceScale * (layer ? layer.gravityScale : 1);
             const drag = Math.max(0, system.drag * (layer ? layer.dragScale : 1));
             const turbulence = system.turbulence * (layer ? layer.turbulenceScale : 1);
+            const windInfluence = layer && Number.isFinite(layer.windInfluence) ? layer.windInfluence : 1;
             const dragFactor = Math.max(0, 1 - (drag * dt));
 
             pool.age[i] += dt;
@@ -2590,8 +2678,17 @@ class RenderWebGL extends EventEmitter {
             pool.vx[i] += noiseX * turbulence * dt;
             pool.vy[i] += (noiseY * turbulence * dt) + (gravity * dt);
 
+            if (windInfluence > 0 && (baseWindX !== 0 || baseWindY !== 0 || windGust !== 0)) {
+                const gustX = Math.sin((pool.age[i] * 3.7) + (pool.seed[i] * 23.0)) * windGust;
+                const gustY = Math.cos((pool.age[i] * 2.9) + (pool.seed[i] * 17.0)) * (windGust * 0.35);
+                pool.vx[i] += (baseWindX + gustX) * windInfluence * dt;
+                pool.vy[i] += (baseWindY + gustY) * windInfluence * dt;
+            }
+
             if (isFirePreset) {
-                const columnPull = Math.min(95, Math.max(-95, -pool.x[i] * 1.45));
+                const spawnColumnX = pool.spawnX ? pool.spawnX[i] : 0;
+                const localX = pool.x[i] - spawnColumnX;
+                const columnPull = Math.min(95, Math.max(-95, -localX * 1.45));
                 const flicker = Math.sin((pool.age[i] * 18) + (pool.seed[i] * 80)) * (32 + (20 * (1 - lifeT)));
                 const buoyancyBoost = (88 * (1 - lifeT)) + 30;
                 pool.vx[i] += (columnPull + flicker) * dt;
@@ -2619,8 +2716,13 @@ class RenderWebGL extends EventEmitter {
      */
     penLine (penSkinID, penAttributes, x0, y0, x1, y1) {
         this.dirty = true;
+        this._syncPenDrawablesToCamera();
         const skin = /** @type {PenSkin} */ this._allSkins[penSkinID];
-        skin.drawLine(penAttributes, x0, y0, x1, y1);
+        const lastCamera = this._getPenLastCamera(penSkinID);
+        const p0 = this._cameraLockedPen ? [x0 - lastCamera.x, y0 - lastCamera.y] : [x0, y0];
+        const p1 = this._cameraLockPenPoint(x1, y1);
+        skin.drawLine(penAttributes, p0[0], p0[1], p1[0], p1[1]);
+        this._setPenLastCamera(penSkinID, this.cameraState.x, this.cameraState.y);
     }
 
     /**
