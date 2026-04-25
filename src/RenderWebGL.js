@@ -10,6 +10,7 @@ const Drawable = require('./Drawable');
 const Rectangle = require('./Rectangle');
 const PenSkin = require('./PenSkin');
 const ParticleSkin = require('./ParticleSkin');
+const TileSkin = require('./TileSkin');
 const RenderConstants = require('./RenderConstants');
 const ShaderManager = require('./ShaderManager');
 const SVGSkin = require('./SVGSkin');
@@ -338,6 +339,7 @@ class RenderWebGL extends EventEmitter {
             TextBubbleSkin,
             PenSkin,
             ParticleSkin,
+            TileSkin,
             SVGSkin,
             CanvasMeasurementProvider,
             Rectangle
@@ -348,13 +350,15 @@ class RenderWebGL extends EventEmitter {
             vendor: 'unsandboxed',
             particleApiVersion: 1,
             supportsParticleLayers: true,
-            supportsParticleLayerBlend: true
+            supportsParticleLayerBlend: true,
+            tileApiVersion: 1,
+            supportsTileSkin: true
         };
     }
 
     /**
      * Report Unsandboxed renderer capabilities for extension feature-gating.
-     * @returns {{vendor: string, particleApiVersion: number, supportsParticleLayers: boolean, supportsParticleLayerBlend: boolean}}
+     * @returns {{vendor: string, particleApiVersion: number, supportsParticleLayers: boolean, supportsParticleLayerBlend: boolean, tileApiVersion: number, supportsTileSkin: boolean}}
      */
     getUnsandboxedRendererInfo () {
         return this._unsandboxedRendererInfo;
@@ -895,6 +899,23 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Create a new TileSkin.
+     * @param {object=} tileData Initial tilemap payload.
+     * @returns {!int} the ID for the new skin.
+     */
+    createTileSkin (tileData) {
+        const skinId = this._nextSkinId++;
+        const newSkin = new TileSkin(skinId, this);
+        this._allSkins[skinId] = newSkin;
+        if (tileData) {
+            newSkin.setTilemapData(tileData);
+        } else {
+            newSkin.setTilemapData({});
+        }
+        return skinId;
+    }
+
+    /**
      * Create a particle render layer (skin + drawable) owned by the renderer.
      * @param {string} [group='sprite'] layer group to place the drawable into.
      * @returns {{skinId: number, drawableId: number}} handle to the created layer.
@@ -1109,6 +1130,77 @@ class RenderWebGL extends EventEmitter {
         this._reskin(skinId, newSkin);
     }
 
+    /**
+     * Update an existing TileSkin, or create one if the previous skin was not TileSkin.
+     * @param {!int} skinId The ID for the skin to change.
+     * @param {!object} tileData Tilemap payload.
+     */
+    updateTileSkin (skinId, tileData) {
+        if (this._allSkins[skinId] instanceof TileSkin) {
+            this._allSkins[skinId].setTilemapData(tileData || {});
+            return;
+        }
+
+        const newSkin = new TileSkin(skinId, this);
+        newSkin.setTilemapData(tileData || {});
+        this._reskin(skinId, newSkin);
+    }
+
+    /**
+     * Set one cell in a TileSkin layer.
+     * @param {!int} skinId TileSkin ID.
+     * @param {string|number} layerName Layer identifier.
+     * @param {number} x Cell x coordinate.
+     * @param {number} y Cell y coordinate.
+     * @param {string|number|null} tileId Tile identifier; clears when empty.
+     */
+    updateTileSkinCell (skinId, layerName, x, y, tileId) {
+        const skin = this._allSkins[skinId];
+        if (!(skin instanceof TileSkin)) {
+            return;
+        }
+        skin.setCell(layerName, x, y, tileId);
+    }
+
+    /**
+     * Replace one TileSkin layer from cell data.
+     * @param {!int} skinId TileSkin ID.
+     * @param {string|number} layerName Layer identifier.
+     * @param {*} cells Layer cell data.
+     */
+    updateTileSkinLayer (skinId, layerName, cells) {
+        const skin = this._allSkins[skinId];
+        if (!(skin instanceof TileSkin)) {
+            return;
+        }
+        skin.setLayer(layerName, cells);
+    }
+
+    /**
+     * Replace TileSkin tileset.
+     * @param {!int} skinId TileSkin ID.
+     * @param {*} tileset Mapping/array of tile sources.
+     */
+    updateTileSkinTileset (skinId, tileset) {
+        const skin = this._allSkins[skinId];
+        if (!(skin instanceof TileSkin)) {
+            return;
+        }
+        skin.setTileset(tileset);
+    }
+
+    /**
+     * Clear all layers in a TileSkin.
+     * @param {!int} skinId TileSkin ID.
+     */
+    clearTileSkin (skinId) {
+        const skin = this._allSkins[skinId];
+        if (!(skin instanceof TileSkin)) {
+            return;
+        }
+        skin.clearLayers();
+    }
+
     _reskin (skinId, newSkin) {
         const oldSkin = this._allSkins[skinId];
         this._allSkins[skinId] = newSkin;
@@ -1242,7 +1334,10 @@ class RenderWebGL extends EventEmitter {
     }
 
     get _visibleDrawList () {
-        return this._drawList.filter(id => this._allDrawables[id]._visible);
+        return this._drawList.filter(id => {
+            const drawable = this._allDrawables[id];
+            return !!(drawable && drawable._visible);
+        });
     }
 
     // Given a layer group, return the index where it ends (non-inclusive),
@@ -1267,6 +1362,9 @@ class RenderWebGL extends EventEmitter {
         }
         this.dirty = true;
         const drawable = this._allDrawables[drawableID];
+        if (!drawable) {
+            return;
+        }
         drawable.dispose();
         delete this._allDrawables[drawableID];
 
@@ -1366,6 +1464,9 @@ class RenderWebGL extends EventEmitter {
         for (let i = 0; i < this._drawList.length; i++) {
             const drawableId = this._drawList[i];
             const drawable = this._allDrawables[drawableId];
+            if (!drawable) {
+                continue;
+            }
             if (drawable._skin === skin || drawable.clipMaskSkin === skin) {
                 drawable._skinWasAltered();
             }
@@ -1708,6 +1809,9 @@ class RenderWebGL extends EventEmitter {
      * @returns {boolean} True if the Drawable is touching one of candidateIDs.
      */
     isTouchingDrawables (drawableID, candidateIDs = this._drawList) {
+        if (!this._allDrawables[drawableID]) {
+            return false;
+        }
         // if we are invisible we don't touch anything.
         if (!this._allDrawables[drawableID]._visible) {
             return false;
@@ -1715,7 +1819,7 @@ class RenderWebGL extends EventEmitter {
 
         const candidates = this._candidatesTouching(drawableID,
             // even if passed an invisible drawable, we will NEVER touch it!
-            candidateIDs.filter(id => this._allDrawables[id]._visible));
+            candidateIDs.filter(id => this._allDrawables[id] && this._allDrawables[id]._visible));
         if (candidates.length === 0) {
             return false;
         }
@@ -1849,6 +1953,9 @@ class RenderWebGL extends EventEmitter {
 
         candidateIDs = (candidateIDs || this._drawList).filter(id => {
             const drawable = this._allDrawables[id];
+            if (!drawable) {
+                return false;
+            }
             if (!candidateIDs && !drawable.interactive) {
                 return false;
             }
@@ -1880,6 +1987,9 @@ class RenderWebGL extends EventEmitter {
                 for (let d = candidateIDs.length - 1; d >= 0; d--) {
                     const id = candidateIDs[d];
                     const drawable = this._allDrawables[id];
+                    if (!drawable) {
+                        continue;
+                    }
                     if (drawable.isTouching(worldPos)) {
                         hits[id] = (hits[id] || 0) + 1;
                         break;
@@ -2982,6 +3092,9 @@ class RenderWebGL extends EventEmitter {
             if (opts.filter && !opts.filter(drawableID)) continue;
 
             const drawable = this._allDrawables[drawableID];
+            if (!drawable) {
+                continue;
+            }
             /** @todo check if drawable is inside the viewport before anything else */
 
             if (drawMode === ShaderManager.DRAW_MODE.default) {

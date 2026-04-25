@@ -44,7 +44,7 @@
     "webpack": "4.47.0",
     "webpack-cli": "3.3.12",
     "webpack-dev-server": "3.11.2",
-    "@turbowarp/scratch-storage": "github:Unsandboxed/scratch-storage#develop"
+    "scratch-storage": "2.3.1"
   },
   "dependencies": {
     "@turbowarp/ancient-hull.js": "^0.2.13",
