@@ -3236,6 +3236,14 @@ class RenderWebGL extends EventEmitter {
                     currentBlendMode = 'default';
                     currentBlendAmount = 100;
 
+                    // Backdrop can be transparent; seed the stencil with stage background color
+                    // so "behind" effects don't reveal black in transparent backdrop regions.
+                    this.enterDrawRegion(this._backgroundDrawRegionId);
+                    twgl.setUniforms(this._shaderManager.getShader(ShaderManager.DRAW_MODE.background, 0), {
+                        u_backgroundColor: this._backgroundColor4f
+                    });
+                    twgl.drawBufferInfo(gl, this._bufferInfo, gl.TRIANGLES);
+
                     if (behindDrawableIDs.length > 0) {
                         this._drawThese(behindDrawableIDs, ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
                             _forceBlendMode: 'default',
@@ -3246,7 +3254,6 @@ class RenderWebGL extends EventEmitter {
 
                     gl.disable(gl.STENCIL_TEST);
                     gl.stencilMask(0xFF);
-                    continue;
                 }
 
                 const blendTargetConfigs = targetBlendConfigs.filter(config => config.mode !== 'effect');
@@ -3276,6 +3283,12 @@ class RenderWebGL extends EventEmitter {
                 gl.stencilMask(0x00);
                 gl.stencilFunc(gl.NOTEQUAL, 1, 0xFF);
                 gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+                if (drawableBlendMode !== 'default') {
+                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                        _forceBlendMode: 'default',
+                        _forceBlendAmount: 100
+                    }));
+                }
                 this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
                     _forceBlendMode: drawableBlendMode,
                     _forceBlendAmount: drawableBlendAmount
@@ -3296,6 +3309,13 @@ class RenderWebGL extends EventEmitter {
                     gl.stencilMask(0x00);
                     gl.stencilFunc(gl.EQUAL, 1, 0xFF);
                     gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+
+                    if (config.mode !== 'default') {
+                        this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                            _forceBlendMode: 'default',
+                            _forceBlendAmount: 100
+                        }));
+                    }
 
                     this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
                         _forceBlendMode: config.mode,
