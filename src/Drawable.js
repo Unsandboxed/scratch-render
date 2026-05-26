@@ -300,7 +300,7 @@ class Drawable {
     }
 
     /**
-     * @returns {Array<object>} per-target blend configs ({drawableID, mode}), or [] for none.
+     * @returns {Array<object>} per-target blend configs ({drawableID, mode, effect, amount, effects}), or [] for none.
      */
     get blendTargetConfigs () {
         return this._blendTargetConfigs;
@@ -410,16 +410,23 @@ class Drawable {
 
     /**
      * Update blend target configs if they are different.
-     * @param {Array<object>} targetConfigs New target configs ({drawableID, mode}), or [] for none.
+     * @param {Array<object>} targetConfigs New target configs ({drawableID, mode, effect, amount, effects}), or [] for none.
      */
     updateBlendTargetConfigs (targetConfigs) {
         const normalized = Array.isArray(targetConfigs) ? targetConfigs.map(cfg => ({
             drawableID: cfg.drawableID,
-            mode: cfg.mode
+            mode: cfg.mode,
+            effect: cfg.effect,
+            amount: cfg.amount,
+            effects: cfg.effects
         })) : [];
         const changed = this._blendTargetConfigs.length !== normalized.length ||
             this._blendTargetConfigs.some((cfg, i) => (
-                cfg.drawableID !== normalized[i].drawableID || cfg.mode !== normalized[i].mode
+                cfg.drawableID !== normalized[i].drawableID ||
+                cfg.mode !== normalized[i].mode ||
+                cfg.effect !== normalized[i].effect ||
+                cfg.amount !== normalized[i].amount ||
+                cfg.effects !== normalized[i].effects
             ));
         if (changed) {
             this._blendTargetConfigs = normalized;

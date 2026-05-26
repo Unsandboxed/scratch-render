@@ -3026,6 +3026,14 @@ class RenderWebGL extends EventEmitter {
         let currentBlendMode = 'default';
         let currentBlendAmount = 100;
         const skipTargetBlend = !!opts._skipTargetBlend;
+        const isSupportedBlendMode = mode => (
+            mode === 'add' ||
+            mode === 'multiply' ||
+            mode === 'screen' ||
+            mode === 'overlay' ||
+            mode === 'subtract' ||
+            mode === 'invert'
+        );
 
         const applyBlendState = (mode, blendAmount) => {
             const normalizedAmount = Math.max(0, Math.min(1, blendAmount / 100));
@@ -3104,30 +3112,51 @@ class RenderWebGL extends EventEmitter {
                     (Number.isFinite(drawable.blendAmount) ? drawable.blendAmount : 100);
                 const blendAmount = Math.max(0, Math.min(200, requestedAmount));
                 const rawTargetConfigs = Array.isArray(drawable.blendTargetConfigs) ? drawable.blendTargetConfigs : [];
-                const supportedMode = (
-                    requestedMode === 'add' ||
-                    requestedMode === 'multiply' ||
-                    requestedMode === 'screen' ||
-                    requestedMode === 'overlay' ||
-                    requestedMode === 'subtract' ||
-                    requestedMode === 'invert'
-                ) ? requestedMode : 'default';
+                const supportedMode = isSupportedBlendMode(requestedMode) ? requestedMode : 'default';
 
                 drawableBlendMode = supportedMode;
                 drawableBlendAmount = blendAmount;
                 targetBlendConfigs = rawTargetConfigs
-                    .map(config => ({
-                        drawableID: config.drawableID,
-                        mode: (
-                            config.mode === 'add' ||
-                            config.mode === 'multiply' ||
-                            config.mode === 'screen' ||
-                            config.mode === 'overlay' ||
-                            config.mode === 'subtract' ||
-                            config.mode === 'invert'
-                        ) ? config.mode : supportedMode
-                    }))
-                    .filter(config => Number.isInteger(config.drawableID) && config.drawableID !== drawableID && !!this._allDrawables[config.drawableID]);
+                    .map(config => {
+                        const mode = config && typeof config.mode === 'string' ? config.mode : supportedMode;
+                        const normalizedConfig = {
+                            drawableID: config && config.drawableID,
+                            mode: isSupportedBlendMode(mode) ? mode : supportedMode
+                        };
+
+                        if (mode === 'effect') {
+                            const effectValues = Object.create(null);
+
+                            if (config && config.effects && typeof config.effects === 'object' && !Array.isArray(config.effects)) {
+                                const effectNames = Object.keys(config.effects);
+                                for (const effectName of effectNames) {
+                                    const normalizedName = effectName.trim().toLowerCase();
+                                    if (!Object.prototype.hasOwnProperty.call(ShaderManager.EFFECT_INFO, normalizedName)) continue;
+                                    const amount = Number(config.effects[effectName]);
+                                    if (!Number.isFinite(amount)) continue;
+                                    effectValues[normalizedName] = amount;
+                                }
+                            } else {
+                                const effectName = config && typeof config.effect === 'string'
+                                    ? config.effect.trim().toLowerCase()
+                                    : '';
+                                if (effectName && Object.prototype.hasOwnProperty.call(ShaderManager.EFFECT_INFO, effectName)) {
+                                    effectValues[effectName] = Number.isFinite(config.amount) ? config.amount : blendAmount;
+                                }
+                            }
+
+                            if (Object.keys(effectValues).length > 0) {
+                                normalizedConfig.mode = 'effect';
+                                normalizedConfig.effects = effectValues;
+                            }
+                        }
+
+                        return normalizedConfig;
+                    })
+                    .filter(config => (
+                        config.mode === 'effect' ||
+                        (Number.isInteger(config.drawableID) && config.drawableID !== drawableID && !!this._allDrawables[config.drawableID])
+                    ));
 
                 if (supportedMode !== currentBlendMode || blendAmount !== currentBlendAmount) {
                     applyBlendState(supportedMode, blendAmount);
@@ -3164,8 +3193,69 @@ class RenderWebGL extends EventEmitter {
                     filter: null
                 });
 
+                const effectTargetConfigs = targetBlendConfigs.filter(config => config.mode === 'effect' && config.effects);
+                if (effectTargetConfigs.length > 0) {
+                    const combinedEffects = Object.create(null);
+                    for (const config of effectTargetConfigs) {
+                        const effectNames = Object.keys(config.effects);
+                        for (const effectName of effectNames) {
+                            combinedEffects[effectName] = Number(config.effects[effectName]);
+                        }
+                    }
+
+                    const behindDrawableIDs = drawables
+                        .slice(0, drawableIndex)
+                        .filter(id => id !== drawableID && !!this._allDrawables[id]);
+
+                    gl.clearStencil(0);
+                    gl.clear(gl.STENCIL_BUFFER_BIT);
+                    gl.enable(gl.STENCIL_TEST);
+                    gl.stencilMask(0xFF);
+                    gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
+                    gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+
+                    gl.colorMask(false, false, false, false);
+                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
+                    gl.colorMask(true, true, true, true);
+
+                    gl.stencilMask(0x00);
+                    gl.stencilFunc(gl.EQUAL, 1, 0xFF);
+                    gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+
+                    // Erase the original pixels under the lens silhouette first.
+                    // This prevents double-imaging, especially for ghost.
+                    gl.blendEquation(gl.FUNC_ADD);
+                    gl.blendColor(0, 0, 0, 1);
+                    gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
+                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
+
+                    // Restore default alpha blending for effect redraw.
+                    gl.blendEquation(gl.FUNC_ADD);
+                    gl.blendColor(0, 0, 0, 1);
+                    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+                    currentBlendMode = 'default';
+                    currentBlendAmount = 100;
+
+                    if (behindDrawableIDs.length > 0) {
+                        this._drawThese(behindDrawableIDs, ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                            _forceBlendMode: 'default',
+                            _forceBlendAmount: 100,
+                            _forceEffectOverrides: combinedEffects
+                        }));
+                    }
+
+                    gl.disable(gl.STENCIL_TEST);
+                    gl.stencilMask(0xFF);
+                    continue;
+                }
+
+                const blendTargetConfigs = targetBlendConfigs.filter(config => config.mode !== 'effect');
+                if (blendTargetConfigs.length === 0) {
+                    continue;
+                }
+
                 const uniqueTargetIDs = [];
-                for (const config of targetBlendConfigs) {
+                for (const config of blendTargetConfigs) {
                     if (!uniqueTargetIDs.includes(config.drawableID)) {
                         uniqueTargetIDs.push(config.drawableID);
                     }
@@ -3192,7 +3282,7 @@ class RenderWebGL extends EventEmitter {
                 }));
 
                 // Target-specific mode overrides: apply per target overlap.
-                for (const config of targetBlendConfigs) {
+                for (const config of blendTargetConfigs) {
                     gl.clearStencil(0);
                     gl.clear(gl.STENCIL_BUFFER_BIT);
                     gl.stencilMask(0xFF);
@@ -3221,6 +3311,22 @@ class RenderWebGL extends EventEmitter {
             const uniforms = {};
 
             let effectBits = drawable.enabledEffects;
+            const forceEffectOverrides = (drawMode === ShaderManager.DRAW_MODE.default && opts._forceEffectOverrides) || null;
+            if (forceEffectOverrides) {
+                effectBits = 0;
+                const overrideNames = Object.keys(forceEffectOverrides);
+                for (const effectName of overrideNames) {
+                    const effectInfo = ShaderManager.EFFECT_INFO[effectName];
+                    if (!effectInfo) continue;
+
+                    const rawValue = Number(forceEffectOverrides[effectName]);
+                    if (rawValue) {
+                        effectBits |= effectInfo.mask;
+                    } else {
+                        effectBits &= ~effectInfo.mask;
+                    }
+                }
+            }
             effectBits &= Object.prototype.hasOwnProperty.call(opts, 'effectMask') ? opts.effectMask : effectBits;
             const newShader = this._shaderManager.getShader(drawMode, effectBits);
 
@@ -3241,6 +3347,15 @@ class RenderWebGL extends EventEmitter {
             Object.assign(uniforms,
                 drawable.skin.getUniforms(drawableScale),
                 drawable.getUniforms());
+
+            if (forceEffectOverrides) {
+                const overrideNames = Object.keys(forceEffectOverrides);
+                for (const effectName of overrideNames) {
+                    const effectInfo = ShaderManager.EFFECT_INFO[effectName];
+                    if (!effectInfo) continue;
+                    uniforms[effectInfo.uniformName] = effectInfo.converter(Number(forceEffectOverrides[effectName]));
+                }
+            }
 
             if (drawable.clipMaskSkin) {
                 const maskTexture = drawable.clipMaskSkin.getTexture(drawableScale);
