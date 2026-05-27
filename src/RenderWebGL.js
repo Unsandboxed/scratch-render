@@ -3148,6 +3148,7 @@ class RenderWebGL extends EventEmitter {
                             if (Object.keys(effectValues).length > 0) {
                                 normalizedConfig.mode = 'effect';
                                 normalizedConfig.effects = effectValues;
+                                normalizedConfig.keepSpriteVisible = !config || config.keepSpriteVisible !== false;
                             }
                         }
 
@@ -3194,6 +3195,7 @@ class RenderWebGL extends EventEmitter {
                 });
 
                 const effectTargetConfigs = targetBlendConfigs.filter(config => config.mode === 'effect' && config.effects);
+                const keepSpriteVisible = effectTargetConfigs.every(config => config.keepSpriteVisible !== false);
                 if (effectTargetConfigs.length > 0) {
                     const combinedEffects = Object.create(null);
                     for (const config of effectTargetConfigs) {
@@ -3202,10 +3204,29 @@ class RenderWebGL extends EventEmitter {
                             combinedEffects[effectName] = Number(config.effects[effectName]);
                         }
                     }
-
                     const behindDrawableIDs = drawables
                         .slice(0, drawableIndex)
                         .filter(id => id !== drawableID && !!this._allDrawables[id]);
+
+                    const renderableBehindDrawableIDs = behindDrawableIDs.filter(id => {
+                        const candidate = this._allDrawables[id];
+                        if (!candidate) return false;
+                        if (!candidate.getVisible() && !recursiveOptsBase.ignoreVisibility) return false;
+                        if (!candidate.skin) return false;
+                        if (recursiveOptsBase.skipPrivateSkins && candidate.skin.private) return false;
+
+                        const candidateScale = framebufferSpaceScaleDiffers ? [
+                            candidate.scale[0] * opts.framebufferWidth / this._nativeSize[0],
+                            candidate.scale[1] * opts.framebufferHeight / this._nativeSize[1]
+                        ] : candidate.scale;
+
+                        return !!candidate.skin.getTexture(candidateScale);
+                    });
+
+                    const hasBehindDrawables = renderableBehindDrawableIDs.length > 0;
+                    const effectFreeMaskOpts = Object.assign({}, recursiveOptsBase, {
+                        effectMask: 0
+                    });
 
                     gl.clearStencil(0);
                     gl.clear(gl.STENCIL_BUFFER_BIT);
@@ -3215,41 +3236,49 @@ class RenderWebGL extends EventEmitter {
                     gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
 
                     gl.colorMask(false, false, false, false);
-                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
+                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.silhouette, projection, effectFreeMaskOpts);
                     gl.colorMask(true, true, true, true);
 
                     gl.stencilMask(0x00);
                     gl.stencilFunc(gl.EQUAL, 1, 0xFF);
                     gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
 
-                    // Erase the original pixels under the lens silhouette first.
-                    // This prevents double-imaging, especially for ghost.
-                    gl.blendEquation(gl.FUNC_ADD);
-                    gl.blendColor(0, 0, 0, 1);
-                    gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
-                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
+                    if (keepSpriteVisible) {
+                        // Underlay mode: render effected-behind content in the silhouette region
+                        // without replacing the already rendered scene.
+                        if (hasBehindDrawables) {
+                            this._drawThese(renderableBehindDrawableIDs, ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                                _forceBlendMode: 'default',
+                                _forceBlendAmount: 100,
+                                _forceEffectOverrides: combinedEffects
+                            }));
+                        }
+                    } else {
+                        // Replace mode: replace silhouette region with effected-behind content.
+                        gl.blendEquation(gl.FUNC_ADD);
+                        gl.blendColor(0, 0, 0, 1);
+                        gl.blendFunc(gl.ZERO, gl.ONE_MINUS_SRC_ALPHA);
+                        this._drawThese([drawableID], ShaderManager.DRAW_MODE.silhouette, projection, effectFreeMaskOpts);
 
-                    // Restore default alpha blending for effect redraw.
-                    gl.blendEquation(gl.FUNC_ADD);
-                    gl.blendColor(0, 0, 0, 1);
-                    gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
-                    currentBlendMode = 'default';
-                    currentBlendAmount = 100;
+                        gl.blendEquation(gl.FUNC_ADD);
+                        gl.blendColor(0, 0, 0, 1);
+                        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+                        currentBlendMode = 'default';
+                        currentBlendAmount = 100;
 
-                    // Backdrop can be transparent; seed the stencil with stage background color
-                    // so "behind" effects don't reveal black in transparent backdrop regions.
-                    this.enterDrawRegion(this._backgroundDrawRegionId);
-                    twgl.setUniforms(this._shaderManager.getShader(ShaderManager.DRAW_MODE.background, 0), {
-                        u_backgroundColor: this._backgroundColor4f
-                    });
-                    twgl.drawBufferInfo(gl, this._bufferInfo, gl.TRIANGLES);
+                        this.enterDrawRegion(this._backgroundDrawRegionId);
+                        twgl.setUniforms(this._shaderManager.getShader(ShaderManager.DRAW_MODE.background, 0), {
+                            u_backgroundColor: this._backgroundColor4f
+                        });
+                        twgl.drawBufferInfo(gl, this._bufferInfo, gl.TRIANGLES);
 
-                    if (behindDrawableIDs.length > 0) {
-                        this._drawThese(behindDrawableIDs, ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
-                            _forceBlendMode: 'default',
-                            _forceBlendAmount: 100,
-                            _forceEffectOverrides: combinedEffects
-                        }));
+                        if (hasBehindDrawables) {
+                            this._drawThese(renderableBehindDrawableIDs, ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                                _forceBlendMode: 'default',
+                                _forceBlendAmount: 100,
+                                _forceEffectOverrides: combinedEffects
+                            }));
+                        }
                     }
 
                     gl.disable(gl.STENCIL_TEST);
@@ -3258,74 +3287,88 @@ class RenderWebGL extends EventEmitter {
 
                 const blendTargetConfigs = targetBlendConfigs.filter(config => config.mode !== 'effect');
                 if (blendTargetConfigs.length === 0) {
-                    continue;
-                }
-
-                const uniqueTargetIDs = [];
-                for (const config of blendTargetConfigs) {
-                    if (!uniqueTargetIDs.includes(config.drawableID)) {
-                        uniqueTargetIDs.push(config.drawableID);
+                    if (!keepSpriteVisible) {
+                        continue;
                     }
-                }
 
-                gl.clearStencil(0);
-                gl.clear(gl.STENCIL_BUFFER_BIT);
-                gl.enable(gl.STENCIL_TEST);
-                gl.stencilMask(0xFF);
-                gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
-                gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
+                    // Effect underlay pass temporarily restores default blending.
+                    // Re-apply this drawable's blend mode so the normal draw below uses it.
+                    if (drawableBlendMode !== currentBlendMode || drawableBlendAmount !== currentBlendAmount) {
+                        applyBlendState(drawableBlendMode, drawableBlendAmount);
+                        currentBlendMode = drawableBlendMode;
+                        currentBlendAmount = drawableBlendAmount;
+                    }
+                } else {
+                    const uniqueTargetIDs = [];
+                    for (const config of blendTargetConfigs) {
+                        if (!uniqueTargetIDs.includes(config.drawableID)) {
+                            uniqueTargetIDs.push(config.drawableID);
+                        }
+                    }
 
-                gl.colorMask(false, false, false, false);
-                this._drawThese(uniqueTargetIDs, ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
-                gl.colorMask(true, true, true, true);
-
-                // Fallback/default mode: applies to pixels not covered by accounted targets.
-                gl.stencilMask(0x00);
-                gl.stencilFunc(gl.NOTEQUAL, 1, 0xFF);
-                gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
-                if (drawableBlendMode !== 'default') {
-                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
-                        _forceBlendMode: 'default',
-                        _forceBlendAmount: 100
-                    }));
-                }
-                this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
-                    _forceBlendMode: drawableBlendMode,
-                    _forceBlendAmount: drawableBlendAmount
-                }));
-
-                // Target-specific mode overrides: apply per target overlap.
-                for (const config of blendTargetConfigs) {
                     gl.clearStencil(0);
                     gl.clear(gl.STENCIL_BUFFER_BIT);
+                    gl.enable(gl.STENCIL_TEST);
                     gl.stencilMask(0xFF);
                     gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
                     gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
 
                     gl.colorMask(false, false, false, false);
-                    this._drawThese([config.drawableID], ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
+                    this._drawThese(uniqueTargetIDs, ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
                     gl.colorMask(true, true, true, true);
 
+                    // Fallback/default mode: applies to pixels not covered by accounted targets.
                     gl.stencilMask(0x00);
-                    gl.stencilFunc(gl.EQUAL, 1, 0xFF);
+                    gl.stencilFunc(gl.NOTEQUAL, 1, 0xFF);
                     gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
-
-                    if (config.mode !== 'default') {
+                    if (keepSpriteVisible) {
+                        if (drawableBlendMode !== 'default') {
+                            this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                                _forceBlendMode: 'default',
+                                _forceBlendAmount: 100
+                            }));
+                        }
                         this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
-                            _forceBlendMode: 'default',
-                            _forceBlendAmount: 100
+                            _forceBlendMode: drawableBlendMode,
+                            _forceBlendAmount: drawableBlendAmount
                         }));
                     }
 
-                    this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
-                        _forceBlendMode: config.mode,
-                        _forceBlendAmount: drawableBlendAmount
-                    }));
-                }
+                    // Target-specific mode overrides: apply per target overlap.
+                    for (const config of blendTargetConfigs) {
+                        gl.clearStencil(0);
+                        gl.clear(gl.STENCIL_BUFFER_BIT);
+                        gl.stencilMask(0xFF);
+                        gl.stencilFunc(gl.ALWAYS, 1, 0xFF);
+                        gl.stencilOp(gl.KEEP, gl.KEEP, gl.REPLACE);
 
-                gl.disable(gl.STENCIL_TEST);
-                gl.stencilMask(0xFF);
-                continue;
+                        gl.colorMask(false, false, false, false);
+                        this._drawThese([config.drawableID], ShaderManager.DRAW_MODE.silhouette, projection, recursiveOptsBase);
+                        gl.colorMask(true, true, true, true);
+
+                        gl.stencilMask(0x00);
+                        gl.stencilFunc(gl.EQUAL, 1, 0xFF);
+                        gl.stencilOp(gl.KEEP, gl.KEEP, gl.KEEP);
+
+                        if (keepSpriteVisible) {
+                            if (config.mode !== 'default') {
+                                this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                                    _forceBlendMode: 'default',
+                                    _forceBlendAmount: 100
+                                }));
+                            }
+
+                            this._drawThese([drawableID], ShaderManager.DRAW_MODE.default, projection, Object.assign({}, recursiveOptsBase, {
+                                _forceBlendMode: config.mode,
+                                _forceBlendAmount: drawableBlendAmount
+                            }));
+                        }
+                    }
+
+                    gl.disable(gl.STENCIL_TEST);
+                    gl.stencilMask(0xFF);
+                    continue;
+                }
             }
 
             const uniforms = {};

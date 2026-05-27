@@ -200,6 +200,7 @@ class ShaderManager {
         const customUniforms = [];
         const customTexcoord = [];
         const customColor = [];
+        const knownUniformNames = this._collectKnownUniformNames(fragmentSource, effectBits);
 
         const numEffects = ShaderManager.EFFECTS.length;
         for (let index = 0; index < numEffects; ++index) {
@@ -214,7 +215,10 @@ class ShaderManager {
             const ifdefEnd = `#endif // ENABLE_${effectName}`;
 
             if (shaderHooks.fragmentUniforms) {
-                customUniforms.push(ifdefStart, shaderHooks.fragmentUniforms, ifdefEnd);
+                const uniformSnippet = this._filterDuplicateUniformDeclarations(shaderHooks.fragmentUniforms, knownUniformNames);
+                if (uniformSnippet.trim()) {
+                    customUniforms.push(ifdefStart, uniformSnippet, ifdefEnd);
+                }
             }
             if (shaderHooks.fragmentTexcoord) {
                 customTexcoord.push(ifdefStart, shaderHooks.fragmentTexcoord, ifdefEnd);
@@ -228,6 +232,103 @@ class ShaderManager {
             .replace('/* __CUSTOM_EFFECT_UNIFORMS__ */', customUniforms.join('\n'))
             .replace('/* __CUSTOM_EFFECT_TEXCOORD__ */', customTexcoord.join('\n'))
             .replace('/* __CUSTOM_EFFECT_COLOR__ */', customColor.join('\n'));
+    }
+
+    /**
+     * Collect uniform names already declared in a GLSL source string.
+     * @param {string} shaderSource GLSL source code.
+     * @returns {Set<string>} Set of uniform variable names.
+     * @private
+     */
+    _collectKnownUniformNames (shaderSource, effectBits) {
+        const uniformNames = this._collectUnconditionalUniformNames(shaderSource);
+
+        // Built-in sprite effect uniforms are conditionally compiled under ENABLE_*.
+        // Only mark them as known when their effect bit is active for this shader.
+        const addIfEnabled = (effectName, names) => {
+            const effectInfo = ShaderManager.EFFECT_INFO[effectName];
+            if (!effectInfo) return;
+            if ((effectBits & effectInfo.mask) === 0) return;
+            for (const name of names) {
+                uniformNames.add(name);
+            }
+        };
+
+        addIfEnabled('color', ['u_color']);
+        addIfEnabled('brightness', ['u_brightness']);
+        addIfEnabled('fisheye', ['u_fisheye']);
+        addIfEnabled('whirl', ['u_whirl']);
+        addIfEnabled('pixelate', ['u_pixelate', 'u_skinSize']);
+        addIfEnabled('mosaic', ['u_mosaic']);
+        addIfEnabled('ghost', ['u_ghost']);
+
+        return uniformNames;
+    }
+
+    /**
+     * Collect uniform names declared outside of conditional preprocessor blocks.
+     * @param {string} shaderSource GLSL source code.
+     * @returns {Set<string>} Set of uniform variable names.
+     * @private
+     */
+    _collectUnconditionalUniformNames (shaderSource) {
+        const uniformNames = new Set();
+        const lines = shaderSource.split(/\r?\n/);
+        const uniformRegex = /^\s*uniform\s+[^;]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*;\s*$/;
+        let conditionalDepth = 0;
+
+        for (const line of lines) {
+            const directiveMatch = line.match(/^\s*#\s*(ifdef|ifndef|if|else|elif|endif)\b/);
+            if (directiveMatch) {
+                const directive = directiveMatch[1];
+                if (directive === 'if' || directive === 'ifdef' || directive === 'ifndef') {
+                    conditionalDepth += 1;
+                } else if (directive === 'endif') {
+                    conditionalDepth = Math.max(0, conditionalDepth - 1);
+                }
+                continue;
+            }
+
+            if (conditionalDepth > 0) continue;
+
+            const uniformMatch = line.match(uniformRegex);
+            if (uniformMatch) {
+                uniformNames.add(uniformMatch[1]);
+            }
+        }
+
+        return uniformNames;
+    }
+
+    /**
+     * Remove duplicate uniform declarations from an injected GLSL snippet.
+     * @param {string} snippet GLSL snippet to sanitize.
+     * @param {Set<string>} knownUniformNames Existing uniform names.
+     * @returns {string} Sanitized GLSL snippet.
+     * @private
+     */
+    _filterDuplicateUniformDeclarations (snippet, knownUniformNames) {
+        const lines = snippet.split(/\r?\n/);
+        const uniformRegex = /^\s*uniform\s+[^;]*\s+([A-Za-z_][A-Za-z0-9_]*)\s*(?:\[[^\]]+\])?\s*;\s*$/;
+        const keptLines = [];
+
+        for (const line of lines) {
+            const match = line.match(uniformRegex);
+            if (!match) {
+                keptLines.push(line);
+                continue;
+            }
+
+            const uniformName = match[1];
+            if (knownUniformNames.has(uniformName)) {
+                continue;
+            }
+
+            knownUniformNames.add(uniformName);
+            keptLines.push(line);
+        }
+
+        return keptLines.join('\n');
     }
 
     /**
