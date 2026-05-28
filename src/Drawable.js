@@ -74,18 +74,27 @@ const getClipMaskLocalPosition = (drawable, vec) => {
 };
 
 const isTouchingClipMask = (drawable, vec) => {
-    const clipMaskSkin = drawable._clipMaskSkin;
+    const sourceDrawable = drawable._clipMaskSourceDrawable;
+    const clipMaskSkin = sourceDrawable ? sourceDrawable.skin : drawable._clipMaskSkin;
     if (!clipMaskSkin) {
         return true;
     }
 
     const localPosition = getClipMaskLocalPosition(drawable, vec);
+
+    const clipMaskScaleDrawable = sourceDrawable || drawable;
+    if (clipMaskScaleDrawable.enabledEffects !== 0 &&
+        (localPosition[0] >= 0 && localPosition[0] < 1) &&
+        (localPosition[1] >= 0 && localPosition[1] < 1)) {
+        EffectTransform.transformPoint(clipMaskScaleDrawable, localPosition, localPosition);
+    }
+
     if (localPosition[0] < 0 || localPosition[1] < 0 ||
         localPosition[0] > 1 || localPosition[1] > 1) {
         return false;
     }
 
-    if (clipMaskSkin.useNearest(drawable._scale, drawable)) {
+    if (clipMaskSkin.useNearest(clipMaskScaleDrawable._scale, clipMaskScaleDrawable)) {
         return clipMaskSkin.isTouchingNearest(localPosition);
     }
 
@@ -171,6 +180,7 @@ class Drawable {
         this._clipMaskModelMatrix = twgl.m4.identity();
         this._clipMaskInverseMatrix = twgl.m4.identity();
         this._clipMaskSkin = null;
+        this._clipMaskSourceDrawable = null;
         this._clipMaskPosition = null; // null means follow sprite
         this._direction = 90;
         this._transformDirty = true;
@@ -258,7 +268,14 @@ class Drawable {
      * @returns {?Skin} the current clip mask skin for this Drawable.
      */
     get clipMaskSkin () {
-        return this._clipMaskSkin;
+        return this._clipMaskSourceDrawable ? this._clipMaskSourceDrawable.skin : this._clipMaskSkin;
+    }
+
+    /**
+     * @returns {?Drawable} source drawable used for clip mask transform/silhouette.
+     */
+    get clipMaskSourceDrawable () {
+        return this._clipMaskSourceDrawable;
     }
 
     /**
@@ -477,6 +494,17 @@ class Drawable {
     }
 
     /**
+     * Set or clear a source drawable used for clip-mask silhouette and transform.
+     * @param {?Drawable} sourceDrawable Source drawable to follow, or null.
+     */
+    updateClipMaskSourceDrawable (sourceDrawable) {
+        this._clipMaskSourceDrawable = sourceDrawable || null;
+        this._clipMaskTransformDirty = true;
+        this._renderer.dirty = true;
+        this.setConvexHullDirty();
+    }
+
+    /**
      * Update visibility if it is different. Marks the convex hull as dirty.
      * @param {boolean} visible A new visibility state.
      */
@@ -602,6 +630,9 @@ class Drawable {
         }
         if ('clipMaskSkin' in properties) {
             this.updateClipMaskSkin(properties.clipMaskSkin);
+        }
+        if ('clipMaskSourceDrawable' in properties) {
+            this.updateClipMaskSourceDrawable(properties.clipMaskSourceDrawable);
         }
         const numEffects = ShaderManager.EFFECTS.length;
         for (let index = 0; index < numEffects; ++index) {
@@ -765,6 +796,24 @@ class Drawable {
      * @private
      */
     _updateClipMaskMatrix () {
+        const sourceDrawable = this._clipMaskSourceDrawable;
+        if (sourceDrawable) {
+            if (!sourceDrawable.skin) {
+                this._uniforms.u_hasMask = 0;
+                this._clipMaskTransformDirty = false;
+                return;
+            }
+
+            // Keep source transform up to date so mask tracks costume/rotation/size/position.
+            sourceDrawable.updateMatrix();
+            twgl.m4.copy(sourceDrawable._uniforms.u_modelMatrix, this._clipMaskModelMatrix);
+            twgl.m4.copy(sourceDrawable._inverseMatrix, this._clipMaskInverseMatrix);
+            twgl.m4.copy(this._clipMaskInverseMatrix, this._uniforms.u_maskInverseMatrix);
+            this._uniforms.u_hasMask = 1;
+            this._clipMaskTransformDirty = false;
+            return;
+        }
+
         if (!this._clipMaskSkin) {
             this._uniforms.u_hasMask = 0;
             this._clipMaskTransformDirty = false;
@@ -834,7 +883,7 @@ class Drawable {
      * @private
      */
     _applyClipMaskBounds (bounds) {
-        if (!this._clipMaskSkin) {
+        if (!this.clipMaskSkin) {
             return bounds;
         }
 
@@ -1081,9 +1130,11 @@ class Drawable {
         // CPU rendering always occurs at the "native" size, so no need to scale up this._scale
         if (this.skin) {
             this.skin.updateSilhouette(this._scale);
-            if (this._clipMaskSkin) {
+            const clipMaskSkin = this.clipMaskSkin;
+            if (clipMaskSkin) {
                 this._updateClipMaskMatrix();
-                this._clipMaskSkin.updateSilhouette(this._scale);
+                const clipMaskScaleDrawable = this._clipMaskSourceDrawable || this;
+                clipMaskSkin.updateSilhouette(clipMaskScaleDrawable._scale);
             }
 
             if (this.skin.useNearest(this._scale, this)) {

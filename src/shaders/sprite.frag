@@ -48,6 +48,17 @@ uniform vec4 u_backgroundColor;
 uniform sampler2D u_skin;
 uniform sampler2D u_maskSkin;
 uniform float u_hasMask;
+uniform float u_maskEnableFisheye;
+uniform float u_maskEnableWhirl;
+uniform float u_maskEnablePixelate;
+uniform float u_maskEnableMosaic;
+uniform float u_maskEnableGhost;
+uniform float u_maskFisheye;
+uniform float u_maskWhirl;
+uniform float u_maskPixelate;
+uniform float u_maskMosaic;
+uniform float u_maskGhost;
+uniform vec2 u_maskSkinSize;
 uniform float u_hasClipBox;
 uniform vec4 u_clipBox;
 
@@ -74,10 +85,46 @@ vec4 sampleSpriteTexel(vec2 uv)
 
 float sampleMaskAlpha(vec2 uv)
 {
+	if (u_maskEnableMosaic > 0.5) {
+		uv = fract(u_maskMosaic * uv);
+	}
+
+	if (u_maskEnablePixelate > 0.5) {
+		vec2 pixelTexelSize = u_maskSkinSize / max(u_maskPixelate, epsilon);
+		uv = (floor(uv * pixelTexelSize) + vec2(0.5)) / pixelTexelSize;
+	}
+
+	if (u_maskEnableWhirl > 0.5) {
+		const float kRadius = 0.5;
+		vec2 offset = uv - vec2(0.5);
+		float offsetMagnitude = length(offset);
+		float whirlFactor = max(1.0 - (offsetMagnitude / kRadius), 0.0);
+		float whirlActual = u_maskWhirl * whirlFactor * whirlFactor;
+		float sinWhirl = sin(whirlActual);
+		float cosWhirl = cos(whirlActual);
+		mat2 rotationMatrix = mat2(
+			cosWhirl, -sinWhirl,
+			sinWhirl, cosWhirl
+		);
+		uv = rotationMatrix * offset + vec2(0.5);
+	}
+
+	if (u_maskEnableFisheye > 0.5) {
+		vec2 vec = (uv - vec2(0.5)) / vec2(0.5);
+		float vecLength = length(vec);
+		float r = pow(min(vecLength, 1.0), u_maskFisheye) * max(1.0, vecLength);
+		vec2 unit = vec / (vecLength + epsilon);
+		uv = vec2(0.5) + r * unit * vec2(0.5);
+	}
+
 	if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
 		return 0.0;
 	}
-	return texture2D(u_maskSkin, uv).a;
+	float alpha = texture2D(u_maskSkin, uv).a;
+	if (u_maskEnableGhost > 0.5) {
+		alpha *= u_maskGhost;
+	}
+	return alpha;
 }
 
 #if !defined(DRAW_MODE_silhouette) && (defined(ENABLE_color))

@@ -2337,6 +2337,19 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Update a drawable's clip mask source drawable.
+     * When set, the mask silhouette and transform are read from the source drawable.
+     * @param {number} drawableID The target drawable id.
+     * @param {?number} sourceDrawableID The source drawable id, or null to clear.
+     */
+    updateDrawableClipMaskSourceDrawableId (drawableID, sourceDrawableID) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        const sourceDrawable = typeof sourceDrawableID === 'number' ? this._allDrawables[sourceDrawableID] : null;
+        drawable.updateClipMaskSourceDrawable(sourceDrawable || null);
+    }
+
+    /**
      * Update a drawable's stage-coordinate clipping rectangle.
      * @param {number} drawableID The drawable's id.
      * @param {?Array<number>} box [x1, y1, x2, y2] in stage pixels, or null to clear.
@@ -2552,6 +2565,9 @@ class RenderWebGL extends EventEmitter {
         }
         if ('clipMaskSkinId' in properties) {
             this.updateDrawableClipMaskSkinId(drawableID, properties.clipMaskSkinId);
+        }
+        if ('clipMaskSourceDrawableId' in properties) {
+            this.updateDrawableClipMaskSourceDrawableId(drawableID, properties.clipMaskSourceDrawableId);
         }
         drawable.updateProperties(properties);
     }
@@ -3421,11 +3437,41 @@ class RenderWebGL extends EventEmitter {
             }
 
             if (drawable.clipMaskSkin) {
-                const maskTexture = drawable.clipMaskSkin.getTexture(drawableScale);
+                const maskDrawable = drawable.clipMaskSourceDrawable || drawable;
+                const maskDrawableScale = framebufferSpaceScaleDiffers ? [
+                    maskDrawable.scale[0] * opts.framebufferWidth / this._nativeSize[0],
+                    maskDrawable.scale[1] * opts.framebufferHeight / this._nativeSize[1]
+                ] : maskDrawable.scale;
+                const maskUniforms = maskDrawable.getUniforms();
+                const maskSkinUniforms = drawable.clipMaskSkin.getUniforms(maskDrawableScale, maskDrawable);
+                const maskEffects = maskDrawable.enabledEffects;
+                const maskTexture = drawable.clipMaskSkin.getTexture(maskDrawableScale);
                 uniforms.u_maskSkin = maskTexture;
                 uniforms.u_hasMask = maskTexture ? 1 : 0;
+                uniforms.u_maskEnableFisheye = (maskEffects & ShaderManager.EFFECT_INFO.fisheye.mask) ? 1 : 0;
+                uniforms.u_maskEnableWhirl = (maskEffects & ShaderManager.EFFECT_INFO.whirl.mask) ? 1 : 0;
+                uniforms.u_maskEnablePixelate = (maskEffects & ShaderManager.EFFECT_INFO.pixelate.mask) ? 1 : 0;
+                uniforms.u_maskEnableMosaic = (maskEffects & ShaderManager.EFFECT_INFO.mosaic.mask) ? 1 : 0;
+                uniforms.u_maskEnableGhost = (maskEffects & ShaderManager.EFFECT_INFO.ghost.mask) ? 1 : 0;
+                uniforms.u_maskFisheye = maskUniforms.u_fisheye;
+                uniforms.u_maskWhirl = maskUniforms.u_whirl;
+                uniforms.u_maskPixelate = maskUniforms.u_pixelate;
+                uniforms.u_maskMosaic = maskUniforms.u_mosaic;
+                uniforms.u_maskGhost = maskUniforms.u_ghost;
+                uniforms.u_maskSkinSize = maskSkinUniforms.u_skinSize;
             } else {
                 uniforms.u_hasMask = 0;
+                uniforms.u_maskEnableFisheye = 0;
+                uniforms.u_maskEnableWhirl = 0;
+                uniforms.u_maskEnablePixelate = 0;
+                uniforms.u_maskEnableMosaic = 0;
+                uniforms.u_maskEnableGhost = 0;
+                uniforms.u_maskFisheye = 1;
+                uniforms.u_maskWhirl = 0;
+                uniforms.u_maskPixelate = 10;
+                uniforms.u_maskMosaic = 1;
+                uniforms.u_maskGhost = 1;
+                uniforms.u_maskSkinSize = [1, 1];
             }
 
             // Apply extra uniforms after the Drawable's, to allow overwriting.
@@ -3442,9 +3488,14 @@ class RenderWebGL extends EventEmitter {
             }
 
             if (uniforms.u_maskSkin) {
+                const maskDrawable = drawable.clipMaskSourceDrawable || drawable;
+                const maskDrawableScale = framebufferSpaceScaleDiffers ? [
+                    maskDrawable.scale[0] * opts.framebufferWidth / this._nativeSize[0],
+                    maskDrawable.scale[1] * opts.framebufferHeight / this._nativeSize[1]
+                ] : maskDrawable.scale;
                 twgl.setTextureParameters(
                     gl, uniforms.u_maskSkin, {
-                        minMag: drawable.clipMaskSkin.useNearest(drawableScale, drawable) ? gl.NEAREST : gl.LINEAR
+                        minMag: drawable.clipMaskSkin.useNearest(maskDrawableScale, maskDrawable) ? gl.NEAREST : gl.LINEAR
                     }
                 );
             }
