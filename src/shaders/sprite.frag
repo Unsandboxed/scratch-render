@@ -50,6 +50,7 @@ uniform sampler2D u_maskSkin;
 uniform sampler2D u_viewportSkin;
 uniform float u_hasMask;
 uniform float u_hasViewportSkin;
+uniform float u_viewportFlipY;
 uniform float u_maskEnableFisheye;
 uniform float u_maskEnableWhirl;
 uniform float u_maskEnablePixelate;

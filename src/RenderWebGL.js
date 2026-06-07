@@ -9,6 +9,7 @@ const BitmapSkin = require('./BitmapSkin');
 const Drawable = require('./Drawable');
 const Rectangle = require('./Rectangle');
 const PenSkin = require('./PenSkin');
+const ViewportSkin = require('./ViewportSkin');
 const ParticleSkin = require('./ParticleSkin');
 const TileSkin = require('./TileSkin');
 const RenderConstants = require('./RenderConstants');
@@ -264,6 +265,7 @@ class RenderWebGL extends EventEmitter {
         this._penDrawablesCameraY = null;
         this._cameraLockedPenPoints = null;
         this._penLastCameraBySkin = Object.create(null);
+        this._sceneViewportSkinId = null;
 
         this.useHighQualityRender = false;
 
@@ -870,6 +872,20 @@ class RenderWebGL extends EventEmitter {
         const skinId = this._nextSkinId++;
         const newSkin = new BitmapSkin(skinId, this);
         newSkin.setBitmap(bitmapData, costumeResolution, rotationCenter);
+        this._allSkins[skinId] = newSkin;
+        return skinId;
+    }
+
+    /**
+     * Create a new GPU viewport skin.
+     * @param {number} width texture width.
+     * @param {number} height texture height.
+     * @returns {!int} skin ID.
+     */
+    createViewportSkin (width, height) {
+        const skinId = this._nextSkinId++;
+        const newSkin = new ViewportSkin(skinId, this);
+        newSkin.setViewportSize(width, height);
         this._allSkins[skinId] = newSkin;
         return skinId;
     }
@@ -1486,7 +1502,7 @@ class RenderWebGL extends EventEmitter {
             if (!drawable) {
                 continue;
             }
-            if (drawable._skin === skin || drawable.clipMaskSkin === skin) {
+            if (drawable._skin === skin || drawable.clipMaskSkin === skin || drawable.viewportSkin === skin) {
                 drawable._skinWasAltered();
             }
         }
@@ -1504,6 +1520,10 @@ class RenderWebGL extends EventEmitter {
         this._doExitDrawRegion();
 
         const gl = this._gl;
+
+        if (this._hasSceneViewportConsumers()) {
+            this._renderSceneViewportTexture();
+        }
 
         twgl.bindFramebufferInfo(gl, null);
         gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
@@ -1616,6 +1636,57 @@ class RenderWebGL extends EventEmitter {
             this.dirty = true;
         }
 
+        return true;
+    }
+
+    /**
+     * Capture the current stage render into a GPU viewport skin.
+     * @param {number} skinId destination viewport skin id.
+     * @param {{excludeDrawableIDs?: Array<number>, neutralCamera?: boolean, skipPrivateSkins?: boolean}} [options]
+     * capture options.
+     * @returns {boolean} true when capture succeeds.
+     */
+    captureStageToViewportSkin (skinId, options = {}) {
+        const skin = this._allSkins[skinId];
+        if (!(skin instanceof ViewportSkin)) return false;
+
+        const gl = this._gl;
+        skin.setViewportSize(gl.canvas.width, gl.canvas.height);
+        const framebufferInfo = skin.framebuffer;
+        if (!framebufferInfo) return false;
+
+        this._doExitDrawRegion();
+        twgl.bindFramebufferInfo(gl, framebufferInfo);
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+        gl.clearColor(
+            this._backgroundColor4f[0],
+            this._backgroundColor4f[1],
+            this._backgroundColor4f[2],
+            this._backgroundColor4f[3]
+        );
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        const drawProjection = options.neutralCamera ? this._buildProjectionMatrix(
+            0,
+            0,
+            0,
+            1,
+            Number(this.cameraState.width) || 240,
+            Number(this.cameraState.height) || 180
+        ) : this._projection;
+
+        const excludedIds = Array.isArray(options.excludeDrawableIDs) ? new Set(options.excludeDrawableIDs) : null;
+        const idFilterFunc = excludedIds ? id => !excludedIds.has(id) : null;
+
+        this._drawThese(this._drawList, ShaderManager.DRAW_MODE.default, drawProjection, {
+            framebufferWidth: gl.canvas.width,
+            framebufferHeight: gl.canvas.height,
+            skipPrivateSkins: Boolean(options.skipPrivateSkins),
+            idFilterFunc
+        });
+
+        twgl.bindFramebufferInfo(gl, null);
+        this._regionId = null;
         return true;
     }
 
@@ -2480,6 +2551,17 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Enable/disable renderer-managed scene viewport texture for a drawable.
+     * @param {number} drawableID drawable id.
+     * @param {boolean} enabled whether to use scene viewport texture.
+     */
+    updateDrawableUseSceneViewportTexture (drawableID, enabled) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateUseSceneViewportTexture(enabled);
+    }
+
+    /**
      * Update a drawable's stage-coordinate clipping rectangle.
      * @param {number} drawableID The drawable's id.
      * @param {?Array<number>} box [x1, y1, x2, y2] in stage pixels, or null to clear.
@@ -2702,6 +2784,9 @@ class RenderWebGL extends EventEmitter {
         if ('viewportSkinId' in properties) {
             this.updateDrawableViewportSkinId(drawableID, properties.viewportSkinId);
         }
+        if ('useSceneViewportTexture' in properties) {
+            this.updateDrawableUseSceneViewportTexture(drawableID, properties.useSceneViewportTexture);
+        }
         if ('viewportAnchor' in properties && Array.isArray(properties.viewportAnchor)) {
             this.updateDrawableViewportAnchor(drawableID, properties.viewportAnchor[0], properties.viewportAnchor[1]);
         } else if ('viewportX' in properties || 'viewportY' in properties) {
@@ -2715,6 +2800,58 @@ class RenderWebGL extends EventEmitter {
             }
         }
         drawable.updateProperties(properties);
+    }
+
+    /**
+     * @returns {boolean} whether any drawable currently uses scene viewport texture.
+     * @private
+     */
+    _hasSceneViewportConsumers () {
+        for (let i = 0; i < this._drawList.length; i++) {
+            const drawable = this._allDrawables[this._drawList[i]];
+            if (!drawable || !drawable.skin || !drawable.getVisible()) continue;
+            if (drawable.useSceneViewportTexture) return true;
+        }
+        return false;
+    }
+
+    /**
+     * Ensure internal scene viewport skin exists.
+     * @returns {?number} skin id.
+     * @private
+     */
+    _ensureSceneViewportSkinId () {
+        const gl = this._gl;
+        if (!Number.isInteger(this._sceneViewportSkinId) || !this._allSkins[this._sceneViewportSkinId]) {
+            this._sceneViewportSkinId = this.createViewportSkin(gl.canvas.width, gl.canvas.height);
+        }
+        return this._sceneViewportSkinId;
+    }
+
+    /**
+     * Render the source scene for viewport sprites into internal texture.
+     * @private
+     */
+    _renderSceneViewportTexture () {
+        const skinId = this._ensureSceneViewportSkinId();
+        if (!Number.isInteger(skinId)) return;
+
+        const excluded = [];
+        for (let i = 0; i < this._drawList.length; i++) {
+            const drawableID = this._drawList[i];
+            const drawable = this._allDrawables[drawableID];
+            if (drawable && drawable.useSceneViewportTexture && drawable.skin && drawable.getVisible()) {
+                excluded.push(drawableID);
+            }
+        }
+
+        if (excluded.length === 0) return;
+
+        this.captureStageToViewportSkin(skinId, {
+            excludeDrawableIDs: excluded,
+            neutralCamera: true,
+            skipPrivateSkins: false
+        });
     }
 
     /**
@@ -3619,15 +3756,21 @@ class RenderWebGL extends EventEmitter {
                 uniforms.u_maskSkinSize = [1, 1];
             }
 
-            if (drawable.viewportSkin) {
-                const viewportSkinUniforms = drawable.viewportSkin.getUniforms(drawableScale, drawable);
-                const viewportTexture = drawable.viewportSkin.getTexture(drawableScale);
+            const sceneViewportSkin = drawable.useSceneViewportTexture && Number.isInteger(this._sceneViewportSkinId) ?
+                this._allSkins[this._sceneViewportSkinId] : null;
+            const viewportSkin = sceneViewportSkin || drawable.viewportSkin;
+
+            if (viewportSkin) {
+                const viewportSkinUniforms = viewportSkin.getUniforms(drawableScale, drawable);
+                const viewportTexture = viewportSkin.getTexture(drawableScale);
                 uniforms.u_viewportSkin = viewportTexture;
                 uniforms.u_hasViewportSkin = viewportTexture ? 1 : 0;
                 uniforms.u_viewportSkinSize = viewportSkinUniforms.u_skinSize;
+                uniforms.u_viewportFlipY = viewportSkin instanceof ViewportSkin ? 1 : 0;
             } else {
                 uniforms.u_hasViewportSkin = 0;
                 uniforms.u_viewportSkinSize = [1, 1];
+                uniforms.u_viewportFlipY = 0;
             }
 
             // Apply extra uniforms after the Drawable's, to allow overwriting.
@@ -3659,7 +3802,7 @@ class RenderWebGL extends EventEmitter {
             if (uniforms.u_viewportSkin) {
                 twgl.setTextureParameters(
                     gl, uniforms.u_viewportSkin, {
-                        minMag: drawable.viewportSkin.useNearest(drawableScale, drawable) ? gl.NEAREST : gl.LINEAR
+                        minMag: viewportSkin.useNearest(drawableScale, drawable) ? gl.NEAREST : gl.LINEAR
                     }
                 );
             }

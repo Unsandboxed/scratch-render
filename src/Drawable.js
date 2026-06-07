@@ -195,6 +195,7 @@ class Drawable {
         this._clipMaskSourceDrawable = null;
         this._clipMaskPosition = null; // null means follow sprite
         this._viewportSkin = null;
+        this._useSceneViewportTexture = false;
         this._direction = 90;
         this._transformDirty = true;
         this._clipMaskTransformDirty = true;
@@ -537,6 +538,25 @@ class Drawable {
     }
 
     /**
+     * Enable/disable renderer-managed scene viewport texture sampling for this drawable.
+     * @param {boolean} enabled whether to use scene viewport texture.
+     */
+    updateUseSceneViewportTexture (enabled) {
+        const next = Boolean(enabled);
+        if (this._useSceneViewportTexture !== next) {
+            this._useSceneViewportTexture = next;
+            this._renderer.dirty = true;
+        }
+    }
+
+    /**
+     * @returns {boolean} whether this drawable samples renderer-managed scene viewport texture.
+     */
+    get useSceneViewportTexture () {
+        return this._useSceneViewportTexture;
+    }
+
+    /**
      * Update viewport anchor uniforms.
      * @param {number} x neutral stage UV x.
      * @param {number} y neutral stage UV y.
@@ -683,6 +703,9 @@ class Drawable {
         }
         if ('clipMaskSourceDrawable' in properties) {
             this.updateClipMaskSourceDrawable(properties.clipMaskSourceDrawable);
+        }
+        if ('useSceneViewportTexture' in properties) {
+            this.updateUseSceneViewportTexture(properties.useSceneViewportTexture);
         }
         if ('viewportAnchor' in properties && Array.isArray(properties.viewportAnchor)) {
             this.updateViewportAnchor(properties.viewportAnchor[0], properties.viewportAnchor[1]);
