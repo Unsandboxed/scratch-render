@@ -758,6 +758,25 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Convert a Scratch world-space point to neutral stage UV coordinates.
+     * Neutral means camera transform is intentionally ignored.
+     * @param {number} x world-space x.
+     * @param {number} y world-space y.
+     * @returns {{x: number, y: number}} UV coordinates where (0.5, 0.5) is stage center.
+     */
+    scratchPointToNeutralStageUV (x, y) {
+        const width = (Array.isArray(this._nativeSize) && Number(this._nativeSize[0]) > 0) ? Number(this._nativeSize[0]) : 480;
+        const height = (Array.isArray(this._nativeSize) && Number(this._nativeSize[1]) > 0) ? Number(this._nativeSize[1]) : 360;
+        const px = Number(x) || 0;
+        const py = Number(y) || 0;
+
+        return {
+            x: 0.5 + (px / width),
+            y: 0.5 - (py / height)
+        };
+    }
+
+    /**
      * @return {Array<int>} the "native" size of the stage, which is used for pen, query renders, etc.
      */
     getNativeSize () {
@@ -1511,6 +1530,93 @@ class RenderWebGL extends EventEmitter {
             // that were skipped this frame will become visible again shortly.
             this.dirty = true;
         }
+    }
+
+    /**
+     * Build a projection matrix with the same layout as this._projection.
+     * @param {number} x camera x.
+     * @param {number} y camera y.
+     * @param {number} sin camera sine component.
+     * @param {number} cos camera cosine component.
+     * @param {number} width camera width.
+     * @param {number} height camera height.
+     * @returns {Array<number>} projection matrix.
+     */
+    _buildProjectionMatrix (x, y, sin, cos, width, height) {
+        return [
+            cos / width,
+            -sin / height,
+            0,
+            0,
+            sin / width,
+            cos / height,
+            0,
+            0,
+            0,
+            0,
+            -1,
+            0,
+            ((cos * -x) + (sin * -y)) / width,
+            ((cos * -y) - (sin * -x)) / height,
+            0,
+            1
+        ];
+    }
+
+    /**
+     * Capture the current stage render into a bitmap skin.
+     * @param {number} skinId destination bitmap skin id.
+     * @param {{excludeDrawableIDs?: Array<number>, neutralCamera?: boolean, skipPrivateSkins?: boolean, redrawAfterCapture?: boolean}} [options]
+     * capture options.
+     * @returns {boolean} true when capture succeeds.
+     */
+    captureStageToBitmapSkin (skinId, options = {}) {
+        const skin = this._allSkins[skinId];
+        if (!skin) return false;
+
+        const gl = this._gl;
+        this._doExitDrawRegion();
+
+        twgl.bindFramebufferInfo(gl, null);
+        gl.viewport(0, 0, gl.canvas.width, gl.canvas.height);
+        gl.clearColor(
+            this._backgroundColor4f[0],
+            this._backgroundColor4f[1],
+            this._backgroundColor4f[2],
+            this._backgroundColor4f[3]
+        );
+        gl.clear(gl.COLOR_BUFFER_BIT);
+
+        const drawProjection = options.neutralCamera ? this._buildProjectionMatrix(
+            0,
+            0,
+            0,
+            1,
+            Number(this.cameraState.width) || 240,
+            Number(this.cameraState.height) || 180
+        ) : this._projection;
+
+        const excludedIds = Array.isArray(options.excludeDrawableIDs) ? new Set(options.excludeDrawableIDs) : null;
+        const idFilterFunc = excludedIds ? id => !excludedIds.has(id) : null;
+
+        this._drawThese(this._drawList, ShaderManager.DRAW_MODE.default, drawProjection, {
+            framebufferWidth: gl.canvas.width,
+            framebufferHeight: gl.canvas.height,
+            skipPrivateSkins: Boolean(options.skipPrivateSkins),
+            idFilterFunc
+        });
+
+        this.updateBitmapSkin(skinId, gl.canvas, 1, [gl.canvas.width / 2, gl.canvas.height / 2]);
+
+        const redrawAfterCapture = options.redrawAfterCapture !== false;
+        if (redrawAfterCapture) {
+            this.dirty = true;
+            this.draw();
+        } else {
+            this.dirty = true;
+        }
+
+        return true;
     }
 
     /**
@@ -2350,6 +2456,30 @@ class RenderWebGL extends EventEmitter {
     }
 
     /**
+     * Update a drawable's viewport skin.
+     * This is a dedicated sampler channel for extensions and does not interfere with clip masks.
+     * @param {number} drawableID The drawable's id.
+     * @param {?number} skinId The viewport skin id, or null to clear.
+     */
+    updateDrawableViewportSkinId (drawableID, skinId) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateViewportSkin(typeof skinId === 'number' ? this._allSkins[skinId] : null);
+    }
+
+    /**
+     * Update a drawable's viewport anchor in neutral stage UV space.
+     * @param {number} drawableID The drawable's id.
+     * @param {number} x neutral stage UV x.
+     * @param {number} y neutral stage UV y.
+     */
+    updateDrawableViewportAnchor (drawableID, x, y) {
+        const drawable = this._allDrawables[drawableID];
+        if (!drawable) return;
+        drawable.updateViewportAnchor(x, y);
+    }
+
+    /**
      * Update a drawable's stage-coordinate clipping rectangle.
      * @param {number} drawableID The drawable's id.
      * @param {?Array<number>} box [x1, y1, x2, y2] in stage pixels, or null to clear.
@@ -2568,6 +2698,21 @@ class RenderWebGL extends EventEmitter {
         }
         if ('clipMaskSourceDrawableId' in properties) {
             this.updateDrawableClipMaskSourceDrawableId(drawableID, properties.clipMaskSourceDrawableId);
+        }
+        if ('viewportSkinId' in properties) {
+            this.updateDrawableViewportSkinId(drawableID, properties.viewportSkinId);
+        }
+        if ('viewportAnchor' in properties && Array.isArray(properties.viewportAnchor)) {
+            this.updateDrawableViewportAnchor(drawableID, properties.viewportAnchor[0], properties.viewportAnchor[1]);
+        } else if ('viewportX' in properties || 'viewportY' in properties) {
+            const drawableForAnchor = this._allDrawables[drawableID];
+            if (drawableForAnchor) {
+                this.updateDrawableViewportAnchor(
+                    drawableID,
+                    'viewportX' in properties ? properties.viewportX : drawableForAnchor.getUniforms().u_viewportx,
+                    'viewportY' in properties ? properties.viewportY : drawableForAnchor.getUniforms().u_viewporty
+                );
+            }
         }
         drawable.updateProperties(properties);
     }
@@ -3474,6 +3619,17 @@ class RenderWebGL extends EventEmitter {
                 uniforms.u_maskSkinSize = [1, 1];
             }
 
+            if (drawable.viewportSkin) {
+                const viewportSkinUniforms = drawable.viewportSkin.getUniforms(drawableScale, drawable);
+                const viewportTexture = drawable.viewportSkin.getTexture(drawableScale);
+                uniforms.u_viewportSkin = viewportTexture;
+                uniforms.u_hasViewportSkin = viewportTexture ? 1 : 0;
+                uniforms.u_viewportSkinSize = viewportSkinUniforms.u_skinSize;
+            } else {
+                uniforms.u_hasViewportSkin = 0;
+                uniforms.u_viewportSkinSize = [1, 1];
+            }
+
             // Apply extra uniforms after the Drawable's, to allow overwriting.
             if (opts.extraUniforms) {
                 Object.assign(uniforms, opts.extraUniforms);
@@ -3496,6 +3652,14 @@ class RenderWebGL extends EventEmitter {
                 twgl.setTextureParameters(
                     gl, uniforms.u_maskSkin, {
                         minMag: drawable.clipMaskSkin.useNearest(maskDrawableScale, maskDrawable) ? gl.NEAREST : gl.LINEAR
+                    }
+                );
+            }
+
+            if (uniforms.u_viewportSkin) {
+                twgl.setTextureParameters(
+                    gl, uniforms.u_viewportSkin, {
+                        minMag: drawable.viewportSkin.useNearest(drawableScale, drawable) ? gl.NEAREST : gl.LINEAR
                     }
                 );
             }

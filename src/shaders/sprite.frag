@@ -47,7 +47,9 @@ uniform vec4 u_backgroundColor;
 
 uniform sampler2D u_skin;
 uniform sampler2D u_maskSkin;
+uniform sampler2D u_viewportSkin;
 uniform float u_hasMask;
+uniform float u_hasViewportSkin;
 uniform float u_maskEnableFisheye;
 uniform float u_maskEnableWhirl;
 uniform float u_maskEnablePixelate;
@@ -59,6 +61,7 @@ uniform float u_maskPixelate;
 uniform float u_maskMosaic;
 uniform float u_maskGhost;
 uniform vec2 u_maskSkinSize;
+uniform vec2 u_viewportSkinSize;
 uniform float u_hasClipBox;
 uniform vec4 u_clipBox;
 

@@ -68,7 +68,8 @@ class BitmapSkin extends Skin {
         let textureData = bitmapData;
         if (bitmapData instanceof HTMLCanvasElement && bitmapData.reusable !== false) {
             const context = bitmapData.getContext('2d');
-            textureData = context.getImageData(0, 0, bitmapData.width, bitmapData.height);
+            // WebGL-backed canvases may not expose a 2D context; upload canvas directly in that case.
+            textureData = context ? context.getImageData(0, 0, bitmapData.width, bitmapData.height) : bitmapData;
         }
 
         if (this._texture === null) {

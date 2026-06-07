@@ -161,7 +161,19 @@ class Drawable {
              * The color to use in the silhouette draw mode.
              * @type {Array<number>}
              */
-            u_silhouetteColor: Drawable.color4fFromID(this._id)
+            u_silhouetteColor: Drawable.color4fFromID(this._id),
+
+            /**
+             * Viewport anchor point in neutral stage UV space.
+             * @type {number}
+             */
+            u_viewportx: 0.5,
+
+            /**
+             * Viewport anchor point in neutral stage UV space.
+             * @type {number}
+             */
+            u_viewporty: 0.5
         };
 
         // Effect values are uniforms too
@@ -182,6 +194,7 @@ class Drawable {
         this._clipMaskSkin = null;
         this._clipMaskSourceDrawable = null;
         this._clipMaskPosition = null; // null means follow sprite
+        this._viewportSkin = null;
         this._direction = 90;
         this._transformDirty = true;
         this._clipMaskTransformDirty = true;
@@ -505,6 +518,43 @@ class Drawable {
     }
 
     /**
+     * Update the viewport skin if it is different.
+     * This is a dedicated extension sampler and does not participate in clip-mask geometry.
+     * @param {?Skin} viewportSkin A new viewport skin.
+     */
+    updateViewportSkin (viewportSkin) {
+        if (this._viewportSkin !== viewportSkin) {
+            this._viewportSkin = viewportSkin;
+            this._renderer.dirty = true;
+        }
+    }
+
+    /**
+     * @returns {?Skin} The dedicated viewport skin for this drawable.
+     */
+    get viewportSkin () {
+        return this._viewportSkin;
+    }
+
+    /**
+     * Update viewport anchor uniforms.
+     * @param {number} x neutral stage UV x.
+     * @param {number} y neutral stage UV y.
+     */
+    updateViewportAnchor (x, y) {
+        const nextX = Number(x);
+        const nextY = Number(y);
+        const resolvedX = Number.isFinite(nextX) ? nextX : 0.5;
+        const resolvedY = Number.isFinite(nextY) ? nextY : 0.5;
+
+        if (this._uniforms.u_viewportx !== resolvedX || this._uniforms.u_viewporty !== resolvedY) {
+            this._uniforms.u_viewportx = resolvedX;
+            this._uniforms.u_viewporty = resolvedY;
+            this._renderer.dirty = true;
+        }
+    }
+
+    /**
      * Update visibility if it is different. Marks the convex hull as dirty.
      * @param {boolean} visible A new visibility state.
      */
@@ -633,6 +683,14 @@ class Drawable {
         }
         if ('clipMaskSourceDrawable' in properties) {
             this.updateClipMaskSourceDrawable(properties.clipMaskSourceDrawable);
+        }
+        if ('viewportAnchor' in properties && Array.isArray(properties.viewportAnchor)) {
+            this.updateViewportAnchor(properties.viewportAnchor[0], properties.viewportAnchor[1]);
+        } else if ('viewportX' in properties || 'viewportY' in properties) {
+            this.updateViewportAnchor(
+                'viewportX' in properties ? properties.viewportX : this._uniforms.u_viewportx,
+                'viewportY' in properties ? properties.viewportY : this._uniforms.u_viewporty
+            );
         }
         const numEffects = ShaderManager.EFFECTS.length;
         for (let index = 0; index < numEffects; ++index) {
